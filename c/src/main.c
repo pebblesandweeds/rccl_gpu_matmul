@@ -5,10 +5,18 @@
 #include <rccl/rccl.h>
 #include "../include/utils.h"
 
-#define N 32768
+#define N 16384
 #define NUM_RUNS 25
 
-// Helper function to check NCCL status
+#define CHECK_HIP(cmd) do {                         \
+    hipError_t e = (cmd);                          \
+    if (e != hipSuccess) {                         \
+        printf("HIP error %s:%d '%s'\n",           \
+            __FILE__,__LINE__,hipGetErrorString(e));\
+        exit(EXIT_FAILURE);                         \
+    }                                              \
+} while(0)
+
 #define CHECK_NCCL(cmd) do {                         \
     ncclResult_t e = (cmd);                         \
     if (e != ncclSuccess) {                         \
@@ -22,7 +30,6 @@ int main(int argc, char *argv[]) {
     int num_gpus;
     CHECK_HIP(hipGetDeviceCount(&num_gpus));
 
-    // Allocate and initialize host matrices on GPU 0
     float *h_A = NULL, *h_B = NULL, *h_C = NULL;
     size_t full_size = N * N * sizeof(float);
     size_t chunk_size = N / num_gpus;
@@ -32,41 +39,33 @@ int main(int argc, char *argv[]) {
     h_B = (float*)malloc(full_size);
     h_C = (float*)malloc(full_size);
 
-    // Initialize matrices with random data
     for (int i = 0; i < N * N; i++) {
         h_A[i] = (float)rand() / RAND_MAX;
         h_B[i] = (float)rand() / RAND_MAX;
     }
 
-    // Arrays to store device pointers for each GPU
     float **d_A_chunks = (float**)malloc(num_gpus * sizeof(float*));
     float **d_B = (float**)malloc(num_gpus * sizeof(float*));
     float **d_C_chunks = (float**)malloc(num_gpus * sizeof(float*));
+    float **d_C_final = (float**)malloc(num_gpus * sizeof(float*));  // New buffer for gathered results
 
-    // NCCL communicators
     ncclComm_t* comms = (ncclComm_t*)malloc(sizeof(ncclComm_t) * num_gpus);
     hipStream_t* streams = (hipStream_t*)malloc(sizeof(hipStream_t) * num_gpus);
 
-    // Initialize NCCL communicators
     int devList[num_gpus];
     for (int i = 0; i < num_gpus; i++) {
         devList[i] = i;
     }
     CHECK_NCCL(ncclCommInitAll(comms, num_gpus, devList));
 
-    // Allocate memory and create streams on each GPU
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-
-        // Create stream for this GPU
         CHECK_HIP(hipStreamCreate(&streams[i]));
-
-        // Allocate memory on this GPU
         CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
         CHECK_HIP(hipMalloc(&d_B[i], full_size));
-        CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
+        CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));  // Partial results
+        CHECK_HIP(hipMalloc(&d_C_final[i], full_size));    // Full gathered results
 
-        // Copy chunk of A and full B to each GPU
         CHECK_HIP(hipMemcpyAsync(d_A_chunks[i],
                                 h_A + (i * chunk_size * N),
                                 chunk_bytes,
@@ -80,7 +79,6 @@ int main(int argc, char *argv[]) {
                                 streams[i]));
     }
 
-    // Create rocBLAS handles for each GPU
     rocblas_handle* handles = (rocblas_handle*)malloc(num_gpus * sizeof(rocblas_handle));
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
@@ -88,14 +86,20 @@ int main(int argc, char *argv[]) {
         CHECK_ROCBLAS(rocblas_set_stream(handles[i], streams[i]));
     }
 
-    // Broadcast matrix B to all GPUs using NCCL
+    CHECK_NCCL(ncclGroupStart());
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_NCCL(ncclBroadcast(d_B[i], d_B[i], N * N, ncclFloat, 0,
                                 comms[i], streams[i]));
     }
+    CHECK_NCCL(ncclGroupEnd());
 
-    // Perform matrix multiplication on each GPU
+    // Sync after broadcast
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        CHECK_HIP(hipStreamSynchronize(streams[i]));
+    }
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
@@ -121,7 +125,6 @@ int main(int argc, char *argv[]) {
             CHECK_HIP(hipEventRecord(stops[i], streams[i]));
         }
 
-        // Wait for computations and measure time
         for (int i = 0; i < num_gpus; i++) {
             CHECK_HIP(hipSetDevice(i));
             CHECK_HIP(hipEventSynchronize(stops[i]));
@@ -139,17 +142,62 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Gather results using NCCL AllGather
+    // First sync all compute
+    printf("Syncing all compute\n");
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        CHECK_NCCL(ncclAllGather(d_C_chunks[i], d_C_chunks[i], chunk_size * N,
-                                ncclFloat, comms[i], streams[i]));
+        CHECK_HIP(hipStreamSynchronize(streams[i]));
+        CHECK_HIP(hipDeviceSynchronize());
     }
 
-    // Copy final results back to host
-    CHECK_HIP(hipMemcpy(h_C, d_C_chunks[0], full_size, hipMemcpyDeviceToHost));
+    // Clear the destination buffer before AllGather
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        CHECK_HIP(hipMemsetAsync(d_C_final[i], 0, full_size, streams[i]));
+    }
 
-    // Cleanup
+    printf("Starting AllGather\n");
+    CHECK_NCCL(ncclGroupStart());
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        // Use d_C_chunks as source and d_C_final as destination
+        CHECK_NCCL(ncclAllGather(d_C_chunks[i],        // Source: partial results
+                                d_C_final[i],          // Destination: full results
+                                chunk_size * N,        // Count of elements per rank
+                                ncclFloat,
+                                comms[i],
+                                streams[i]));
+    }
+    CHECK_NCCL(ncclGroupEnd());
+
+    // Wait for NCCL operations to complete
+    printf("Waiting for NCCL operations\n");
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        CHECK_HIP(hipStreamSynchronize(streams[i]));
+        CHECK_HIP(hipDeviceSynchronize());
+
+        // Add error checking after AllGather
+        hipError_t err = hipGetLastError();
+        if (err != hipSuccess) {
+            printf("Error on GPU %d after AllGather: %s\n", i, hipGetErrorString(err));
+            exit(1);
+        }
+    }
+
+    // Now safe to destroy NCCL
+    printf("Destroying NCCL communicators\n");
+    for (int i = 0; i < num_gpus; i++) {
+        ncclCommDestroy(comms[i]);
+    }
+
+    // Copy results after NCCL is done
+    printf("Copying results back to host\n");
+    CHECK_HIP(hipSetDevice(0));
+    CHECK_HIP(hipDeviceSynchronize());
+    CHECK_HIP(hipMemcpy(h_C, d_C_final[0], full_size, hipMemcpyDeviceToHost));
+
+    // Cleanup rest of resources
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_ROCBLAS(rocblas_destroy_handle(handles[i]));
@@ -157,11 +205,7 @@ int main(int argc, char *argv[]) {
         CHECK_HIP(hipFree(d_A_chunks[i]));
         CHECK_HIP(hipFree(d_B[i]));
         CHECK_HIP(hipFree(d_C_chunks[i]));
-    }
-
-    // Destroy NCCL communicators
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_NCCL(ncclCommDestroy(comms[i]));
+        CHECK_HIP(hipFree(d_C_final[i]));
     }
 
     free(comms);
@@ -170,6 +214,7 @@ int main(int argc, char *argv[]) {
     free(d_A_chunks);
     free(d_B);
     free(d_C_chunks);
+    free(d_C_final);
     free(h_A);
     free(h_B);
     free(h_C);
