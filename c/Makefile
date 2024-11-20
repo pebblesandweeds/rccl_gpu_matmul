@@ -1,11 +1,11 @@
 CC = hipcc
 CFLAGS = -I./include -D__HIP_PLATFORM_AMD__=1 -x hip
-LDFLAGS = -lrocblas
+LDFLAGS = -lrocblas -lrccl
 SRC_DIR = src
 OBJ_DIR = obj
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
-EXECUTABLE = gpu_matmul
+EXECUTABLE = multi_gpu_matmul 
 
 all: $(EXECUTABLE)
 
