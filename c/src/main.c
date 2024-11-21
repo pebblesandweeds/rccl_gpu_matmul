@@ -10,24 +10,6 @@
 #define N 32768
 #define NUM_RUNS 25
 
-#define CHECK_HIP(cmd) do {                         \
-    hipError_t e = (cmd);                          \
-    if (e != hipSuccess) {                         \
-        printf("HIP error %s:%d '%s'\n",           \
-            __FILE__,__LINE__,hipGetErrorString(e));\
-        exit(EXIT_FAILURE);                         \
-    }                                              \
-} while(0)
-
-#define CHECK_NCCL(cmd) do {                         \
-    ncclResult_t e = (cmd);                         \
-    if (e != ncclSuccess) {                         \
-        printf("NCCL error %s:%d '%s'\n",           \
-            __FILE__,__LINE__,ncclGetErrorString(e));\
-        exit(EXIT_FAILURE);                         \
-    }                                               \
-} while(0)
-
 int main(int argc, char *argv[]) {
     int num_gpus;
     CHECK_HIP(hipGetDeviceCount(&num_gpus));
@@ -41,7 +23,6 @@ int main(int argc, char *argv[]) {
     h_B = (float*)malloc(full_size);
     h_C = (float*)malloc(full_size);
 
-    // Using library function instead of direct initialization
     initialize_matrices(h_A, h_B, N);
 
     float **d_A_chunks = (float**)malloc(num_gpus * sizeof(float*));
@@ -106,7 +87,8 @@ int main(int argc, char *argv[]) {
     for (int run = 0; run < NUM_RUNS; run++) {
         hipEvent_t starts[num_gpus], stops[num_gpus];
 
-        for (int i = 0; i < num_gpus; i++) {                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               CHECK_HIP(hipSetDevice(i));
+        for (int i = 0; i < num_gpus; i++) {
+            CHECK_HIP(hipSetDevice(i));
             CHECK_HIP(hipEventCreate(&starts[i]));
             CHECK_HIP(hipEventCreate(&stops[i]));
             CHECK_HIP(hipEventRecord(starts[i], streams[i]));
@@ -141,7 +123,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // First sync all compute
     printf("Syncing all compute\n");
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
@@ -149,7 +130,6 @@ int main(int argc, char *argv[]) {
         CHECK_HIP(hipDeviceSynchronize());
     }
 
-    // Clear the destination buffer before AllGather
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_HIP(hipMemsetAsync(d_C_final[i], 0, full_size, streams[i]));
@@ -159,16 +139,15 @@ int main(int argc, char *argv[]) {
     CHECK_NCCL(ncclGroupStart());
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        CHECK_NCCL(ncclAllGather(d_C_chunks[i],        // Source: partial results
-                                d_C_final[i],          // Destination: full results
-                                chunk_size * N,        // Count of elements per rank
+        CHECK_NCCL(ncclAllGather(d_C_chunks[i],
+                                d_C_final[i],
+                                chunk_size * N,
                                 ncclFloat,
                                 comms[i],
                                 streams[i]));
     }
     CHECK_NCCL(ncclGroupEnd());
 
-    // Wait for NCCL operations to complete
     printf("Waiting for NCCL operations\n");
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
@@ -182,19 +161,16 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Now safe to destroy NCCL
     printf("Destroying NCCL communicators\n");
     for (int i = 0; i < num_gpus; i++) {
         ncclCommDestroy(comms[i]);
     }
 
-    // Copy results after NCCL is done
     printf("Copying results back to host\n");
     CHECK_HIP(hipSetDevice(0));
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(h_C, d_C_final[0], full_size, hipMemcpyDeviceToHost));
 
-    // Perform spot check validation
     printf("\nStarting spot check validation...\n");
     spot_check(h_A, h_B, h_C, N);
     printf("Spot check complete\n\n");
