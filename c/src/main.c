@@ -4,8 +4,9 @@
 #include <rocblas/rocblas.h>
 #include <rccl/rccl.h>
 #include "../include/utils.h"
+#include "../include/spot_check.h"
 
-#define N 16384
+#define N 32768
 #define NUM_RUNS 25
 
 #define CHECK_HIP(cmd) do {                         \
@@ -89,8 +90,7 @@ int main(int argc, char *argv[]) {
     CHECK_NCCL(ncclGroupStart());
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        CHECK_NCCL(ncclBroadcast(d_B[i], d_B[i], N * N, ncclFloat, 0,
-                                comms[i], streams[i]));
+        CHECK_NCCL(ncclBroadcast(d_B[i], d_B[i], N * N, ncclFloat, 0,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          comms[i], streams[i]));
     }
     CHECK_NCCL(ncclGroupEnd());
 
@@ -196,6 +196,11 @@ int main(int argc, char *argv[]) {
     CHECK_HIP(hipSetDevice(0));
     CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(h_C, d_C_final[0], full_size, hipMemcpyDeviceToHost));
+
+    // Perform spot check validation
+    printf("\nStarting spot check validation...\n");
+    spot_check(h_A, h_B, h_C, N);
+    printf("Spot check complete\n\n");
 
     // Cleanup rest of resources
     for (int i = 0; i < num_gpus; i++) {
