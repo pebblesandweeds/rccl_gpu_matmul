@@ -11,8 +11,15 @@
 #define NUM_RUNS 25
 
 int main(int argc, char *argv[]) {
+    // Print GPU and precision information
+    print_gpu_info();
+    print_precision();
+    printf("Matrix size: %d x %d, using %s precision\n", N, N, get_precision_string(sizeof(float)));
+    printf("\n");
+
     int num_gpus;
     CHECK_HIP(hipGetDeviceCount(&num_gpus));
+    printf("Running on %d GPUs\n\n", num_gpus);
 
     float *h_A = NULL, *h_B = NULL, *h_C = NULL;
     size_t full_size = N * N * sizeof(float);
@@ -84,6 +91,7 @@ int main(int argc, char *argv[]) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
+    printf("Starting matrix multiplication runs...\n");
     for (int run = 0; run < NUM_RUNS; run++) {
         hipEvent_t starts[num_gpus], stops[num_gpus];
 
@@ -121,9 +129,10 @@ int main(int argc, char *argv[]) {
             CHECK_HIP(hipEventDestroy(starts[i]));
             CHECK_HIP(hipEventDestroy(stops[i]));
         }
+        if (run < NUM_RUNS - 1) printf("\n");  // Add spacing between runs
     }
 
-    printf("Syncing all compute\n");
+    printf("\nSyncing all compute\n");
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_HIP(hipStreamSynchronize(streams[i]));
