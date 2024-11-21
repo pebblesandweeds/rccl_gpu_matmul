@@ -11,7 +11,6 @@
 #define NUM_RUNS 25
 
 int main(int argc, char *argv[]) {
-    // Print GPU and precision information
     print_gpu_info();
     print_precision();
     printf("Matrix size: %d x %d, using %s precision\n", N, N, get_precision_string(sizeof(float)));
@@ -88,56 +87,8 @@ int main(int argc, char *argv[]) {
         CHECK_HIP(hipStreamSynchronize(streams[i]));
     }
 
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-
-    printf("Starting matrix multiplication runs...\n");
-    for (int run = 0; run < NUM_RUNS; run++) {
-        hipEvent_t starts[num_gpus], stops[num_gpus];
-
-        for (int i = 0; i < num_gpus; i++) {
-            CHECK_HIP(hipSetDevice(i));
-            CHECK_HIP(hipEventCreate(&starts[i]));
-            CHECK_HIP(hipEventCreate(&stops[i]));
-            CHECK_HIP(hipEventRecord(starts[i], streams[i]));
-
-            CHECK_ROCBLAS(rocblas_sgemm(handles[i],
-                                       rocblas_operation_none,
-                                       rocblas_operation_none,
-                                       N, chunk_size, N,
-                                       &alpha,
-                                       d_B[i], N,
-                                       d_A_chunks[i], N,
-                                       &beta,
-                                       d_C_chunks[i], N));
-
-            CHECK_HIP(hipEventRecord(stops[i], streams[i]));
-        }
-
-        for (int i = 0; i < num_gpus; i++) {
-            CHECK_HIP(hipSetDevice(i));
-            CHECK_HIP(hipEventSynchronize(stops[i]));
-
-            float compute_time;
-            CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
-            double chunk_flops = 2.0 * chunk_size * N * N;
-            double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
-
-            printf("GPU %d, Run %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
-                   i, run+1, compute_time, tflops);
-
-            CHECK_HIP(hipEventDestroy(starts[i]));
-            CHECK_HIP(hipEventDestroy(stops[i]));
-        }
-        if (run < NUM_RUNS - 1) printf("\n");  // Add spacing between runs
-    }
-
-    printf("\nSyncing all compute\n");
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_HIP(hipStreamSynchronize(streams[i]));
-        CHECK_HIP(hipDeviceSynchronize());
-    }
+    // Call the refactored matrix multiplication function
+    perform_matrix_multiplication(handles, d_A_chunks, d_B, d_C_chunks, N, chunk_size, num_gpus, streams, NUM_RUNS);
 
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
@@ -184,7 +135,7 @@ int main(int argc, char *argv[]) {
     spot_check(h_A, h_B, h_C, N);
     printf("Spot check complete\n\n");
 
-    // Cleanup rest of resources
+    // Cleanup
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_ROCBLAS(rocblas_destroy_handle(handles[i]));

@@ -22,32 +22,65 @@ void transpose_matrix(const float *src, float *dst, int n) {
     }
 }
 
-void perform_matrix_multiplication(rocblas_handle handle, float *d_A, float *d_B, float *d_C, int N, int NUM_RUNS) {
+void perform_matrix_multiplication(
+    rocblas_handle* handles,
+    float** d_A_chunks,
+    float** d_B,
+    float** d_C_chunks,
+    int N,
+    int chunk_size,
+    int num_gpus,
+    hipStream_t* streams,
+    int NUM_RUNS) {
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    double total_flops = 2.0 * N * N * N;
 
-    hipEvent_t start, stop;
-    CHECK_HIP(hipEventCreate(&start));
-    CHECK_HIP(hipEventCreate(&stop));
-
+    printf("Starting matrix multiplication runs...\n");
     for (int run = 0; run < NUM_RUNS; run++) {
-        CHECK_HIP(hipEventRecord(start));
-        CHECK_ROCBLAS(rocblas_sgemm(handle,
-                                    rocblas_operation_none, rocblas_operation_none,
-                                    N, N, N, &alpha, d_A, N, d_B, N, &beta, d_C, N));
-        CHECK_HIP(hipEventRecord(stop));
-        CHECK_HIP(hipEventSynchronize(stop));
+        hipEvent_t starts[num_gpus], stops[num_gpus];
 
-        float compute_time;
-        CHECK_HIP(hipEventElapsedTime(&compute_time, start, stop));
-        double seconds = compute_time / 1000.0;
-        double tflops = total_flops / (seconds * 1e12);
+        for (int i = 0; i < num_gpus; i++) {
+            CHECK_HIP(hipSetDevice(i));
+            CHECK_HIP(hipEventCreate(&starts[i]));
+            CHECK_HIP(hipEventCreate(&stops[i]));
+            CHECK_HIP(hipEventRecord(starts[i], streams[i]));
 
-        printf("Run %d: Matrix multiplication time: %f ms, Performance: %.2f TFLOPS\n",
-               run+1, compute_time, tflops);
+            CHECK_ROCBLAS(rocblas_sgemm(handles[i],
+                                       rocblas_operation_none,
+                                       rocblas_operation_none,
+                                       N, chunk_size, N,
+                                       &alpha,
+                                       d_B[i], N,
+                                       d_A_chunks[i], N,
+                                       &beta,
+                                       d_C_chunks[i], N));
+
+            CHECK_HIP(hipEventRecord(stops[i], streams[i]));
+        }
+
+        for (int i = 0; i < num_gpus; i++) {
+            CHECK_HIP(hipSetDevice(i));
+            CHECK_HIP(hipEventSynchronize(stops[i]));
+
+            float compute_time;
+            CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
+            double chunk_flops = 2.0 * chunk_size * N * N;
+            double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
+
+            printf("GPU %d, Run %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
+                   i, run+1, compute_time, tflops);
+
+            CHECK_HIP(hipEventDestroy(starts[i]));
+            CHECK_HIP(hipEventDestroy(stops[i]));
+        }
+        if (run < NUM_RUNS - 1) printf("\n");
     }
 
-    CHECK_HIP(hipEventDestroy(start));
-    CHECK_HIP(hipEventDestroy(stop));
+    // Sync all compute
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        CHECK_HIP(hipStreamSynchronize(streams[i]));
+        CHECK_HIP(hipDeviceSynchronize());
+    }
 }
