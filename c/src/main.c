@@ -5,6 +5,7 @@
 #include <rccl/rccl.h>
 #include "../include/utils.h"
 #include "../include/spot_check.h"
+#include "../include/matrix_operations.h"
 
 #define N 32768
 #define NUM_RUNS 25
@@ -40,15 +41,13 @@ int main(int argc, char *argv[]) {
     h_B = (float*)malloc(full_size);
     h_C = (float*)malloc(full_size);
 
-    for (int i = 0; i < N * N; i++) {
-        h_A[i] = (float)rand() / RAND_MAX;
-        h_B[i] = (float)rand() / RAND_MAX;
-    }
+    // Using library function instead of direct initialization
+    initialize_matrices(h_A, h_B, N);
 
     float **d_A_chunks = (float**)malloc(num_gpus * sizeof(float*));
     float **d_B = (float**)malloc(num_gpus * sizeof(float*));
     float **d_C_chunks = (float**)malloc(num_gpus * sizeof(float*));
-    float **d_C_final = (float**)malloc(num_gpus * sizeof(float*));  // New buffer for gathered results
+    float **d_C_final = (float**)malloc(num_gpus * sizeof(float*));
 
     ncclComm_t* comms = (ncclComm_t*)malloc(sizeof(ncclComm_t) * num_gpus);
     hipStream_t* streams = (hipStream_t*)malloc(sizeof(hipStream_t) * num_gpus);
@@ -64,8 +63,8 @@ int main(int argc, char *argv[]) {
         CHECK_HIP(hipStreamCreate(&streams[i]));
         CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
         CHECK_HIP(hipMalloc(&d_B[i], full_size));
-        CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));  // Partial results
-        CHECK_HIP(hipMalloc(&d_C_final[i], full_size));    // Full gathered results
+        CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
+        CHECK_HIP(hipMalloc(&d_C_final[i], full_size));
 
         CHECK_HIP(hipMemcpyAsync(d_A_chunks[i],
                                 h_A + (i * chunk_size * N),
@@ -90,7 +89,8 @@ int main(int argc, char *argv[]) {
     CHECK_NCCL(ncclGroupStart());
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        CHECK_NCCL(ncclBroadcast(d_B[i], d_B[i], N * N, ncclFloat, 0,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          comms[i], streams[i]));
+        CHECK_NCCL(ncclBroadcast(d_B[i], d_B[i], N * N, ncclFloat, 0,
+                                comms[i], streams[i]));
     }
     CHECK_NCCL(ncclGroupEnd());
 
@@ -106,8 +106,7 @@ int main(int argc, char *argv[]) {
     for (int run = 0; run < NUM_RUNS; run++) {
         hipEvent_t starts[num_gpus], stops[num_gpus];
 
-        for (int i = 0; i < num_gpus; i++) {
-            CHECK_HIP(hipSetDevice(i));
+        for (int i = 0; i < num_gpus; i++) {                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               CHECK_HIP(hipSetDevice(i));
             CHECK_HIP(hipEventCreate(&starts[i]));
             CHECK_HIP(hipEventCreate(&stops[i]));
             CHECK_HIP(hipEventRecord(starts[i], streams[i]));
@@ -160,7 +159,6 @@ int main(int argc, char *argv[]) {
     CHECK_NCCL(ncclGroupStart());
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        // Use d_C_chunks as source and d_C_final as destination
         CHECK_NCCL(ncclAllGather(d_C_chunks[i],        // Source: partial results
                                 d_C_final[i],          // Destination: full results
                                 chunk_size * N,        // Count of elements per rank
@@ -177,7 +175,6 @@ int main(int argc, char *argv[]) {
         CHECK_HIP(hipStreamSynchronize(streams[i]));
         CHECK_HIP(hipDeviceSynchronize());
 
-        // Add error checking after AllGather
         hipError_t err = hipGetLastError();
         if (err != hipSuccess) {
             printf("Error on GPU %d after AllGather: %s\n", i, hipGetErrorString(err));
