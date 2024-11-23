@@ -6,6 +6,7 @@
 #include "../include/utils.h"
 #include "../include/spot_check.h"
 #include "../include/matrix_operations.h"
+#include "../include/rccl_utils.h"
 
 #define N 32768
 #define NUM_RUNS 25
@@ -36,18 +37,11 @@ int main(int argc, char *argv[]) {
     float **d_C_chunks = (float**)malloc(num_gpus * sizeof(float*));
     float **d_C_final = (float**)malloc(num_gpus * sizeof(float*));
 
-    ncclComm_t* comms = (ncclComm_t*)malloc(sizeof(ncclComm_t) * num_gpus);
-    hipStream_t* streams = (hipStream_t*)malloc(sizeof(hipStream_t) * num_gpus);
-
-    int devList[num_gpus];
-    for (int i = 0; i < num_gpus; i++) {
-        devList[i] = i;
-    }
-    CHECK_NCCL(ncclCommInitAll(comms, num_gpus, devList));
+    // Initialize RCCL context
+    RCCLContext* rccl_ctx = rccl_init(num_gpus);
 
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        CHECK_HIP(hipStreamCreate(&streams[i]));
         CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
         CHECK_HIP(hipMalloc(&d_B[i], full_size));
         CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
@@ -57,78 +51,45 @@ int main(int argc, char *argv[]) {
                                 h_A + (i * chunk_size * N),
                                 chunk_bytes,
                                 hipMemcpyHostToDevice,
-                                streams[i]));
+                                rccl_ctx->streams[i]));
 
         CHECK_HIP(hipMemcpyAsync(d_B[i],
                                 h_B,
                                 full_size,
                                 hipMemcpyHostToDevice,
-                                streams[i]));
+                                rccl_ctx->streams[i]));
     }
 
     rocblas_handle* handles = (rocblas_handle*)malloc(num_gpus * sizeof(rocblas_handle));
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_ROCBLAS(rocblas_create_handle(&handles[i]));
-        CHECK_ROCBLAS(rocblas_set_stream(handles[i], streams[i]));
+        CHECK_ROCBLAS(rocblas_set_stream(handles[i], rccl_ctx->streams[i]));
     }
 
-    CHECK_NCCL(ncclGroupStart());
+    // Broadcast matrix B to all GPUs
+    printf("Broadcasting matrix B to all GPUs\n");
+    rccl_broadcast_matrix(rccl_ctx, d_B, N * N);
+    rccl_sync_and_check(rccl_ctx);
+
+    // Perform matrix multiplication
+    perform_matrix_multiplication(handles, d_A_chunks, d_B, d_C_chunks, N, chunk_size, num_gpus, rccl_ctx->streams, NUM_RUNS);
+
+    // Initialize final result arrays
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
-        CHECK_NCCL(ncclBroadcast(d_B[i], d_B[i], N * N, ncclFloat, 0,
-                                comms[i], streams[i]));
-    }
-    CHECK_NCCL(ncclGroupEnd());
-
-    // Sync after broadcast
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_HIP(hipStreamSynchronize(streams[i]));
+        CHECK_HIP(hipMemsetAsync(d_C_final[i], 0, full_size, rccl_ctx->streams[i]));
     }
 
-    // Call the refactored matrix multiplication function
-    perform_matrix_multiplication(handles, d_A_chunks, d_B, d_C_chunks, N, chunk_size, num_gpus, streams, NUM_RUNS);
-
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_HIP(hipMemsetAsync(d_C_final[i], 0, full_size, streams[i]));
-    }
-
+    // Gather results from all GPUs
     printf("Starting AllGather\n");
-    CHECK_NCCL(ncclGroupStart());
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_NCCL(ncclAllGather(d_C_chunks[i],
-                                d_C_final[i],
-                                chunk_size * N,
-                                ncclFloat,
-                                comms[i],
-                                streams[i]));
-    }
-    CHECK_NCCL(ncclGroupEnd());
+    rccl_gather_matrix_chunks(rccl_ctx, d_C_chunks, d_C_final, chunk_size * N);
 
-    printf("Waiting for NCCL operations\n");
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_HIP(hipStreamSynchronize(streams[i]));
-        CHECK_HIP(hipDeviceSynchronize());
-
-        hipError_t err = hipGetLastError();
-        if (err != hipSuccess) {
-            printf("Error on GPU %d after AllGather: %s\n", i, hipGetErrorString(err));
-            exit(1);
-        }
-    }
-
-    printf("Destroying NCCL communicators\n");
-    for (int i = 0; i < num_gpus; i++) {
-        ncclCommDestroy(comms[i]);
-    }
+    printf("Waiting for RCCL operations\n");
+    rccl_sync_and_check(rccl_ctx);
 
     printf("Copying results back to host\n");
     CHECK_HIP(hipSetDevice(0));
-    CHECK_HIP(hipDeviceSynchronize());
     CHECK_HIP(hipMemcpy(h_C, d_C_final[0], full_size, hipMemcpyDeviceToHost));
 
     printf("\nStarting spot check validation...\n");
@@ -139,15 +100,13 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_gpus; i++) {
         CHECK_HIP(hipSetDevice(i));
         CHECK_ROCBLAS(rocblas_destroy_handle(handles[i]));
-        CHECK_HIP(hipStreamDestroy(streams[i]));
         CHECK_HIP(hipFree(d_A_chunks[i]));
         CHECK_HIP(hipFree(d_B[i]));
         CHECK_HIP(hipFree(d_C_chunks[i]));
         CHECK_HIP(hipFree(d_C_final[i]));
     }
 
-    free(comms);
-    free(streams);
+    rccl_cleanup(rccl_ctx);
     free(handles);
     free(d_A_chunks);
     free(d_B);
