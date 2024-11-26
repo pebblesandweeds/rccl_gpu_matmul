@@ -1,29 +1,43 @@
 # Distributed Matrix Multiplication using RCCL 
 
-This repository demonstrates distributed matrix multiplication across multiple AMD GPUs using RCCL (ROCm Communication Collectives Library) and rocBLAS. The implementation distributes the original rocblas_sgemm() computation across multiple GPUs within a single host system to achieve enhanced performance through parallel processing.
+This repository demonstrates distributed matrix multiplication across multiple AMD GPUs using RCCL (ROCm Communication Collectives Library) and rocBLAS. The implementation distributes rocblas_sgemm() matrix multiplication computation across multiple GPUs within a single host system to achieve enhanced performance through parallel processing.
+
+## Overview
+The project provides two implementations:
+
+* A C implementation using RCCL and rocBLAS for distributed GPU matrix multiplication on a single host
+* A PyTorch implementation using DistributedDataParallel with RCCL backend on a single host
+
+Both implementations demonstrate how to:
+
+* Distribute large matrix operations across multiple GPUs
+* Coordinate inter-GPU communication using RCCL
+* Demonstrate single host, multi-GPU performance through data distribution and synchronization
 
 ## Getting Started
 
 ### Prerequisites
 
-* Python 3.x
 * AMD ROCm 6.x
-* Pytorch 2.x+rocm6.x (Pytorch installed with ROCm 6.x support, can be a container or installed via `pip`)
+* RCCL (ROCm Communication Collectives Library)
+* rocBLAS
+* Python 3.x (for PyTorch implementation)
+* PyTorch 2.x+rocm6.x with RCCL support
 
 ### Installation
 
-Installation of AMD ROCm 6.x and Pytorch with ROCm support are out of scope for this repo, see [AMD documentation](https://github.com/ROCm/ROCm) for instructions.  The only dependencies needed are PyTorch for Python, making requirements.txt unnecessary, and the C libraries installed by ROCm 6.x.
+Installation of AMD ROCm 6.x (includes RCCL and rocBLAS) and Pytorch with ROCm support are out of scope for this repo, see [AMD documentation](https://github.com/ROCm/ROCm) for instructions.  The only dependency needed for Python is PyTorch with ROCm support, a separate requirements.txt file is unnecessary. 
 
 ## Usage
 
 ### Running the Pytorch Script
 
-Run the python script using `python pytorch_matmul.py`
+It is recommended to use a Python virtual environment (`venv`, `pyenv`, `conda`) with Pytorch with ROCm support installed.  Run the Pytorch script using `torchrun --nproc_per_node=8 pytorch_rccl.py`.
 
 ### Running the C code
 
 1.  Change directories `cd c`
-2.  Compile and run the benchmark `make && ./gpu_matmul`
+2.  Compile and run the benchmark `make && ./multi_gpu_matmul`
 
 ### Performance Output
 
@@ -34,23 +48,24 @@ The C implementation uses the AMD rocBLAS library directly, requiring more hands
 ## Project Structure
 
 ```
-matrix-multiplication/
+rccl_gpu_matmul/
+├── LICENSE
 ├── README.md
 ├── c/
 │   ├── Makefile
 │   ├── include/
-│   │   ├── timer.h
 │   │   ├── matrix_operations.h
+│   │   ├── rccl_utils.h
 │   │   ├── spot_check.h
+│   │   ├── timer.h
 │   │   └── utils.h
-│   ├── src/
-│   │   ├── main.c
-│   │   ├── timer.c
-│   │   ├── matrix_operations.c
-│   │   ├── spot_check.c
-│   │   └── utils.c
-│   └── obj/
-│       └── (object files will be placed here)
+│   └── src/
+│       ├── main.c
+│       ├── matrix_operations.c
+│       ├── rccl_utils.c
+│       ├── spot_check.c
+│       ├── timer.c
+│       └── utils.c
 └── pytorch/
     └── pytorch_matmul.py
 ```
