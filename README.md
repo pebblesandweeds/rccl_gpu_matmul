@@ -1,6 +1,6 @@
-# Matrix Multiplication on GPUs
+# Distributed Matrix Multiplication using RCCL 
 
-This repository demonstrates matrix multiplication on AMD GPUs using Python/PyTorch and C. The focus is on implementing matrix multiplication in C with the AMD rocBLAS library to achieve similar TFLOPS performance as Python/PyTorch. While both implementations use rocBLAS, this code provides an educational example of how to implement it in C.
+This repository demonstrates distributed matrix multiplication across multiple AMD GPUs using RCCL (ROCm Communication Collectives Library) and rocBLAS. The implementation distributes the original rocblas_sgemm() computation across multiple GPUs within a single host system to achieve enhanced performance through parallel processing.
 
 ## Getting Started
 

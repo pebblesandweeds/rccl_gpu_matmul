@@ -1,3 +1,5 @@
+# Run with `torchrun --nproc_per_node=8 scratch.py` in a Python virtual env installed with ROCm torch
+
 import torch
 import torch.distributed as dist
 import time
