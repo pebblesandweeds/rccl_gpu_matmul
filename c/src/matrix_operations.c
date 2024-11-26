@@ -14,14 +14,6 @@ void initialize_matrices(float *A, float *B, int n) {
     }
 }
 
-void transpose_matrix(const float *src, float *dst, int n) {
-    for (int i = 0; i < n; ++i) {
-        for (int j = 0; j < n; ++j) {
-            dst[j * n + i] = src[i * n + j];
-        }
-    }
-}
-
 void perform_matrix_multiplication(
     rocblas_handle* handles,
     float** d_A_chunks,

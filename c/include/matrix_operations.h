@@ -4,7 +4,6 @@
 #include <rocblas/rocblas.h>
 
 void initialize_matrices(float *A, float *B, int n);
-void transpose_matrix(const float *src, float *dst, int n);
 void perform_matrix_multiplication(
     rocblas_handle* handles,
     float** d_A_chunks,
