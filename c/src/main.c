@@ -29,7 +29,6 @@ int main(int argc, char *argv[]) {
     h_A = (float*)malloc(full_size);
     h_B = (float*)malloc(full_size);
     h_C = (float*)malloc(full_size);
-
     initialize_matrices(h_A, h_B, N);
 
     float **d_A_chunks = (float**)malloc(num_gpus * sizeof(float*));
@@ -46,13 +45,11 @@ int main(int argc, char *argv[]) {
         CHECK_HIP(hipMalloc(&d_B[i], full_size));
         CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
         CHECK_HIP(hipMalloc(&d_C_final[i], full_size));
-
         CHECK_HIP(hipMemcpyAsync(d_A_chunks[i],
                                 h_A + (i * chunk_size * N),
                                 chunk_bytes,
                                 hipMemcpyHostToDevice,
                                 rccl_ctx->streams[i]));
-
         CHECK_HIP(hipMemcpyAsync(d_B[i],
                                 h_B,
                                 full_size,
@@ -84,7 +81,6 @@ int main(int argc, char *argv[]) {
     // Gather results from all GPUs
     printf("Starting AllGather\n");
     rccl_gather_matrix_chunks(rccl_ctx, d_C_chunks, d_C_final, chunk_size * N);
-
     printf("Waiting for RCCL operations\n");
     rccl_sync_and_check(rccl_ctx);
 
@@ -96,25 +92,9 @@ int main(int argc, char *argv[]) {
     spot_check(h_A, h_B, h_C, N);
     printf("Spot check complete\n\n");
 
-    // Cleanup
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_ROCBLAS(rocblas_destroy_handle(handles[i]));
-        CHECK_HIP(hipFree(d_A_chunks[i]));
-        CHECK_HIP(hipFree(d_B[i]));
-        CHECK_HIP(hipFree(d_C_chunks[i]));
-        CHECK_HIP(hipFree(d_C_final[i]));
-    }
-
+    // Cleanup RCCL context and resources
     rccl_cleanup(rccl_ctx);
-    free(handles);
-    free(d_A_chunks);
-    free(d_B);
-    free(d_C_chunks);
-    free(d_C_final);
-    free(h_A);
-    free(h_B);
-    free(h_C);
+    cleanup_resources(handles, d_A_chunks, d_B, d_C_chunks, d_C_final, h_A, h_B, h_C, num_gpus);
 
     return 0;
 }

@@ -1,6 +1,5 @@
 #ifndef UTILS_H
 #define UTILS_H
-
 #include <hip/hip_runtime.h>
 #include <rocblas/rocblas.h>
 #include <rccl/rccl.h>
@@ -32,8 +31,7 @@
 void print_gpu_info();
 void print_precision();
 const char* get_precision_string(size_t size);
-void cleanup(rocblas_handle handle, float *d_A, float *d_B, float *d_C,
-             float *h_A, float *h_B, float *h_C,
-             float *h_A_trans, float *h_B_trans, float *h_C_trans);
-
+void cleanup_resources(rocblas_handle* handles, float** d_A_chunks, float** d_B,
+                      float** d_C_chunks, float** d_C_final, float* h_A,
+                      float* h_B, float* h_C, int num_gpus);
 #endif // UTILS_H

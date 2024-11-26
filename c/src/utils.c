@@ -28,17 +28,26 @@ const char* get_precision_string(size_t size) {
     }
 }
 
-void cleanup(rocblas_handle handle, float *d_A, float *d_B, float *d_C, 
-             float *h_A, float *h_B, float *h_C, 
-             float *h_A_trans, float *h_B_trans, float *h_C_trans) {
-    CHECK_ROCBLAS(rocblas_destroy_handle(handle));
-    CHECK_HIP(hipFree(d_A));
-    CHECK_HIP(hipFree(d_B));
-    CHECK_HIP(hipFree(d_C));
+void cleanup_resources(rocblas_handle* handles, float** d_A_chunks, float** d_B,
+                      float** d_C_chunks, float** d_C_final, float* h_A,
+                      float* h_B, float* h_C, int num_gpus) {
+    // Cleanup GPU resources
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        CHECK_ROCBLAS(rocblas_destroy_handle(handles[i]));
+        CHECK_HIP(hipFree(d_A_chunks[i]));
+        CHECK_HIP(hipFree(d_B[i]));
+        CHECK_HIP(hipFree(d_C_chunks[i]));
+        CHECK_HIP(hipFree(d_C_final[i]));
+    }
+
+    // Free CPU resources
+    free(handles);
+    free(d_A_chunks);
+    free(d_B);
+    free(d_C_chunks);
+    free(d_C_final);
     free(h_A);
     free(h_B);
     free(h_C);
-    free(h_A_trans);
-    free(h_B_trans);
-    free(h_C_trans);
 }
