@@ -18,7 +18,7 @@ Scaling Matrix Multiplication Across Multiple AMD GPUs with RCCL and rocBLAS
 Introduction
 ------------
 
-In our `previous blog post <link-to-previous>`_, we explored implementing matrix multiplication on a single AMD GPU using rocBLAS. While that implementation achieved impressive performance (~37.5 TFLOPS), modern deep learning workloads often require processing even larger matrices that exceed single GPU memory capacity.
+In our `previous blog post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html>`_, we explored implementing matrix multiplication on a single AMD GPU using rocBLAS. While that implementation achieved impressive performance (~37.5 TFLOPS), modern deep learning workloads often require processing even larger matrices that exceed single GPU memory capacity.
 
 This post extends our previous work by distributing matrix multiplication across multiple GPUs using RCCL (ROCm Communication Collectives Library). RCCL provides efficient communication primitives between GPUs, similar to NVIDIA's NCCL, enabling us to coordinate computation across multiple devices.
 
