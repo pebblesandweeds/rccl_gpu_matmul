@@ -29,12 +29,20 @@ Multi-GPU Matrix Multiplication: Architecture and Implementation
 
 Single-GPU Matrix Multiplication
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Matrix multiplication represents one of the fundamental operations in scientific computing and machine learning workloads, and its efficient implementation on GPUs has been a focus of significant optimization efforts. On a single GPU, the computation leverages highly optimized Basic Linear Algebra Subprograms (BLAS) libraries, specifically rocBLAS for AMD GPUs, to perform the core multiplication operation.
 
-Matrix multiplication on a single GPU leverages highly optimized BLAS libraries like rocBLAS to compute the product of two matrices. For matrices A (M×K) and B (K×N), rocBLAS implements the general matrix multiplication formula:
+Key aspects of single-GPU matrix multiplication:
 
-C = α · op(A) · op(B) + β · C
+* **Core Formula**:  For matrices A (M×K) and B (K×N), rocBLAS implements :math:`C = \alpha \cdot op(A) \cdot op(B) + \beta \cdot C`, where op(X) allows for optional transpose operations
 
-where op(X) represents optional transpose operations on the input matrices. While efficient for moderate sizes, this approach becomes memory-bound as matrices grow larger, ultimately hitting the memory capacity limits of a single GPU.
+* **Performance Characteristics**:
+    - Excellent performance for matrices fitting in device memory
+    - Leverages vendor-optimized BLAS implementations
+    - Uses sophisticated tiling and memory hierarchy optimizations
+
+* **Key Limitations**:
+    - Memory capacity constraints of single GPU
+    - Memory bandwidth bottlenecks between host and device
 
 .. figure:: _static/single-gpu-flow.png
    :alt: Single GPU Matrix Multiplication Workflow
@@ -44,8 +52,23 @@ where op(X) represents optional transpose operations on the input matrices. Whil
 
 Distributed Implementation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+To address the limitations of single-GPU implementations, we can leverage multiple GPUs within a single host machine to distribute both the memory requirements and computational load. Our implementation adopts a horizontal partitioning strategy for matrix A while broadcasting matrix B in its entirety to all participating GPUs.
 
-To overcome these limitations, we can distribute the computation across multiple GPUs within a single host machine. As shown in the diagram below, our approach splits matrix A horizontally across available GPUs while broadcasting matrix B to each device. This strategy allows each GPU to compute a portion of the final result independently, after which RCCL (ROCm Communication Collectives Library) consolidates these partial results into the complete output matrix using its allGather operation.
+Core implementation features:
+
+* **Data Distribution**:
+    - Matrix A split horizontally across GPUs
+    - Matrix B broadcast in full to each GPU
+
+* **Computation Flow**:
+    - Each GPU processes its partition independently
+    - Results consolidated via RCCL allGather operation
+
+* **Key Benefits**:
+    - Minimal inter-GPU communication during computation
+    - Balanced workload distribution
+    - Efficient memory utilization
+
 
 .. figure:: _static/matmul_rccl_workflow.png
    :alt: Distributed Matrix Multiplication Workflow
@@ -53,21 +76,38 @@ To overcome these limitations, we can distribute the computation across multiple
    
    Workflow of distributed matrix multiplication across multiple GPUs
 
-The workflow begins by dividing matrix A into equal horizontal partitions, with each GPU receiving M/n rows for n GPUs. Matrix B is broadcast in its entirety to all GPUs using RCCL's broadcast operation, enabling each device to compute its assigned portion of the output matrix. Once local computation is complete, RCCL's allGather operation efficiently combines these partial results into the final M×N output matrix.
-
 Distribution Strategy
 ^^^^^^^^^^^^^^^^^^^^^
-The distribution phase involves two key operations:
+The distribution phase employs two critical operations that enable efficient multi-GPU matrix multiplication. Our approach balances computational efficiency with memory requirements, optimizing for real-world performance.
 
-1. **Horizontal Partitioning**: For a system with n GPUs, matrix A is divided into n horizontal sections, each containing M/n rows. This partitioning ensures balanced computation across devices.
-2. **Matrix B Broadcasting**: The entire matrix B is replicated across all GPUs. While this requires additional memory, it eliminates the need for inter-GPU communication during the computation phase.
+Strategy components:
+
+* **Horizontal Partitioning**:
+    - Matrix A divided into n equal sections for n GPUs
+    - Each partition contains M/n rows
+    - Ensures balanced computation across devices
+
+* **Matrix B Broadcasting**:
+    - Complete matrix replicated to all GPUs
+    - Eliminates inter-GPU communication during computation
+    - Trade-off: increased memory usage for better performance
+
 
 RCCL Communication
 ^^^^^^^^^^^^^^^^^^
-The ROCm Communication Collectives Library (RCCL) provides efficient multi-GPU communication primitives. In our implementation, we utilize:
+The ROCm Communication Collectives Library (RCCL) serves as the backbone for efficient multi-GPU communication in our implementation. The library provides highly optimized primitives that leverage underlying hardware interconnects effectively.
 
-1. **Broadcast**: For distributing matrix B across all devices, ensuring each GPU has a complete copy for computation
-2. **AllGather**: For collecting and combining partial results into the final matrix, efficiently consolidating the distributed computations
+Key RCCL operations:
+
+* **Broadcast Operation**:
+    - Distributes matrix B to all devices
+    - Minimizes redundant data transfers
+    - Ensures computation consistency
+
+* **AllGather Operation**:
+    - Collects partial results from all GPUs
+    - Combines results into final output matrix
+    - Implements efficient communication patterns
 
 Memory Requirements
 ^^^^^^^^^^^^^^^^^^^
