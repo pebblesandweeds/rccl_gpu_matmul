@@ -18,21 +18,56 @@ Scaling Matrix Multiplication Across Multiple AMD GPUs with RCCL and rocBLAS
 Introduction
 ------------
 
-In our `previous blog post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html>`_, we explored implementing matrix multiplication on a single AMD GPU using rocBLAS. While that implementation achieved impressive performance (~37.5 TFLOPS), modern deep learning workloads often require processing even larger matrices that exceed single GPU memory capacity.
+In our `previous blog post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html>`_, we implemented matrix multiplication in C using AMD's `rocBLAS <https://rocm.docs.amd.com/projects/rocBLAS/en/latest/>`_ library, specifically utilizing the `rocblas_sgemm <https://rocm.docs.amd.com/projects/rocBLAS/en/latest/reference/level-3.html#rocblas-xgemm-batched-strided-batched>`_ API to leverage AMD's fast GPU `matrix cores <https://www.amd.com/en/technologies/cdna.html>`_. The implementation demonstrated that carefully written C code using rocBLAS could match the performance of PyTorch's highly optimized matrix operations. By implementing the Basic Linear Algebra Subprograms (BLAS) for the `ROCm™ platform <https://www.amd.com/en/products/software/rocm.html>`_, rocBLAS provides the foundational GPU-accelerated matrix multiplication operations that make this performance possible across scientific computing and deep learning applications.
 
-This post extends our previous work by distributing matrix multiplication across multiple GPUs using RCCL (ROCm Communication Collectives Library). RCCL provides efficient communication primitives between GPUs, similar to NVIDIA's NCCL, enabling us to coordinate computation across multiple devices.
+Matrix multiplication is inherently parallelizable - the computation can be efficiently distributed across multiple processing units with minimal dependencies between parallel tasks. Modern servers and supercomputers systems leverage this parallelism by providing multiple GPUs per node, enabling significant computational speedups through parallel execution. While our `single-GPU implementation <https://github.com/pebblesandweeds/gpu_matmul>`_ demonstrated basic rocBLAS capabilities, the parallel nature of matrix multiplication makes it an ideal candidate for multi-GPU execution.
+
+This post extends our previous work by distributing matrix multiplication across multiple GPUs within a single host using `RCCL <https://github.com/ROCmSoftwarePlatform/rccl>`_ (ROCm Communication Collectives Library). RCCL, `documented here <https://rocm.docs.amd.com/projects/rccl/en/latest/>`_, provides efficient communication primitives between GPUs, similar to NVIDIA's NCCL, enabling us to coordinate computation across all available devices to maximize hardware utilization and computational throughput. Our goal is to show how to extend our single-GPU rocBLAS implementation in C to utilize RCCL for coordinating matrix multiplication across multiple GPUs in a single host system.
 
 Multi-GPU Matrix Multiplication: Architecture and Implementation
 ----------------------------------------------------------------
 
-Architectural Overview
-^^^^^^^^^^^^^^^^^^^^^^
+Single-GPU Matrix Multiplication
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Our multi-GPU implementation follows these key steps:
+Matrix multiplication on a single GPU leverages highly optimized BLAS libraries like rocBLAS to compute the product of two matrices. For matrices A (M×K) and B (K×N), rocBLAS implements the general matrix multiplication formula:
 
-1. **Data Distribution**: Matrix A is split into horizontal chunks distributed across GPUs, while Matrix B is broadcast to all GPUs.
-2. **Parallel Computation**: Each GPU computes its chunk of the final result using rocBLAS.
-3. **Result Collection**: RCCL's allgather operation combines results from all GPUs.
+C = α · op(A) · op(B) + β · C
+
+where op(X) represents optional transpose operations on the input matrices. While efficient for moderate sizes, this approach becomes memory-bound as matrices grow larger, ultimately hitting the memory capacity limits of a single GPU.
+
+.. figure:: _static/single-gpu-flow.png
+   :alt: Single GPU Matrix Multiplication Workflow
+   :align: center
+   
+   Workflow of simple matrix multiplication on single GPU
+
+Distributed Implementation
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To overcome these limitations, we can distribute the computation across multiple GPUs within a single host machine. As shown in the diagram below, our approach splits matrix A horizontally across available GPUs while broadcasting matrix B to each device. This strategy allows each GPU to compute a portion of the final result independently, after which RCCL (ROCm Communication Collectives Library) consolidates these partial results into the complete output matrix using its allGather operation.
+
+.. figure:: _static/matmul_rccl_workflow.png
+   :alt: Distributed Matrix Multiplication Workflow
+   :align: center
+   
+   Workflow of distributed matrix multiplication across multiple GPUs
+
+The workflow begins by dividing matrix A into equal horizontal partitions, with each GPU receiving M/n rows for n GPUs. Matrix B is broadcast in its entirety to all GPUs using RCCL's broadcast operation, enabling each device to compute its assigned portion of the output matrix. Once local computation is complete, RCCL's allGather operation efficiently combines these partial results into the final M×N output matrix.
+
+Distribution Strategy
+^^^^^^^^^^^^^^^^^^^^^
+The distribution phase involves two key operations:
+
+1. **Horizontal Partitioning**: For a system with n GPUs, matrix A is divided into n horizontal sections, each containing M/n rows. This partitioning ensures balanced computation across devices.
+2. **Matrix B Broadcasting**: The entire matrix B is replicated across all GPUs. While this requires additional memory, it eliminates the need for inter-GPU communication during the computation phase.
+
+RCCL Communication
+^^^^^^^^^^^^^^^^^^
+The ROCm Communication Collectives Library (RCCL) provides efficient multi-GPU communication primitives. In our implementation, we utilize:
+
+1. **Broadcast**: For distributing matrix B across all devices, ensuring each GPU has a complete copy for computation
+2. **AllGather**: For collecting and combining partial results into the final matrix, efficiently consolidating the distributed computations
 
 Memory Requirements
 ^^^^^^^^^^^^^^^^^^^
