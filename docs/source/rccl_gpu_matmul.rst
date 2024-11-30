@@ -18,37 +18,28 @@ Scaling Matrix Multiplication Across Multiple AMD GPUs with RCCL and rocBLAS
 Introduction
 ------------
 
-In our `previous blog post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html>`_, we implemented matrix multiplication in C using AMD's `rocBLAS <https://rocm.docs.amd.com/projects/rocBLAS/en/latest/>`_ library, specifically utilizing the `rocblas_sgemm <https://rocm.docs.amd.com/projects/rocBLAS/en/latest/reference/level-3.html#rocblas-xgemm-batched-strided-batched>`_ API to leverage AMD's fast GPU `matrix cores <https://www.amd.com/en/technologies/cdna.html>`_. The implementation demonstrated that carefully written C code using rocBLAS could match the performance of PyTorch's highly optimized matrix operations. By implementing the Basic Linear Algebra Subprograms (BLAS) for the `ROCm™ platform <https://www.amd.com/en/products/software/rocm.html>`_, rocBLAS provides the foundational GPU-accelerated matrix multiplication operations that make this performance possible across scientific computing and deep learning applications.
+In our `previous blog post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html>`_, we implemented matrix multiplication in C using AMD's `rocBLAS <https://rocm.docs.amd.com/projects/rocBLAS/en/latest/>`_ library, specifically utilizing the `rocblas_sgemm <https://rocm.docs.amd.com/projects/rocBLAS/en/latest/reference/level-3.html#rocblas-xgemm-batched-strided-batched>`_ API to leverage AMD's fast GPU `matrix cores <https://www.amd.com/en/technologies/cdna.html>`_. The implementation demonstrated that carefully written C code using rocBLAS could match the performance of PyTorch's highly optimized matrix operations. By leveraging rocBLAS's BLAS (Basic Linear Algebra Subprograms) implementation for the ROCm platform, we achieved GPU-accelerated matrix multiplication performance that matches PyTorch for our deep learning applications. 
 
-Matrix multiplication is inherently parallelizable - the computation can be efficiently distributed across multiple processing units with minimal dependencies between parallel tasks. Modern servers and supercomputers systems leverage this parallelism by providing multiple GPUs per node, enabling significant computational speedups through parallel execution. While our `single-GPU implementation <https://github.com/pebblesandweeds/gpu_matmul>`_ demonstrated basic rocBLAS capabilities, the parallel nature of matrix multiplication makes it an ideal candidate for multi-GPU execution.
+While our previous work focused on single-GPU matrix multiplication, this operation is inherently parallelizable - computations can be efficiently distributed across multiple processing units with minimal dependencies between parallel tasks. Modern servers and supercomputers systems support this parallelism by providing multiple GPUs per node, enabling significant computational speedups through parallel execution. While our `single-GPU implementation <https://github.com/pebblesandweeds/gpu_matmul>`_ demonstrated basic rocBLAS capabilities, the parallel nature of matrix multiplication makes it an ideal candidate for multi-GPU execution.
 
-This post extends our previous work by distributing matrix multiplication across multiple GPUs within a single host using `RCCL <https://github.com/ROCmSoftwarePlatform/rccl>`_ (ROCm Communication Collectives Library). RCCL, `documented here <https://rocm.docs.amd.com/projects/rccl/en/latest/>`_, provides efficient communication primitives between GPUs, similar to NVIDIA's NCCL, enabling us to coordinate computation across all available devices to maximize hardware utilization and computational throughput. Our goal is to show how to extend our single-GPU rocBLAS implementation in C to utilize RCCL for coordinating matrix multiplication across multiple GPUs in a single host system.
+This post extends our previous work by distributing matrix multiplication across multiple GPUs within a single host using `RCCL <https://github.com/ROCmSoftwarePlatform/rccl>`_ (ROCm Communication Collectives Library). `RCCL provides <https://rocm.docs.amd.com/projects/rccl/en/latest/>`_ efficient communication primitives between GPUs, similar to NVIDIA's NCCL, enabling us to coordinate computation across all available devices to maximize hardware utilization and computational throughput. Our goal is to show how to extend our single-GPU rocBLAS implementation in C to utilize RCCL for coordinating matrix multiplication across multiple GPUs in a single host system.
 
 Multi-GPU Matrix Multiplication: Architecture and Implementation
 ----------------------------------------------------------------
 
 Single-GPU Matrix Multiplication
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Matrix multiplication represents one of the fundamental operations in scientific computing and machine learning workloads, and its efficient implementation on GPUs has been a focus of significant optimization efforts. On a single GPU, the computation leverages highly optimized Basic Linear Algebra Subprograms (BLAS) libraries, specifically rocBLAS for AMD GPUs, to perform the core multiplication operation.
+The rocBLAS ``sgemm`` routine implements high-performance matrix multiplication using AMD's matrix core accelerators (detailed formula and optimizations covered in our `previous post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html#matrix-multiplication-formulas>`_).
 
-Key aspects of single-GPU matrix multiplication:
+The implementation follows a straightforward workflow - matrices A and B are transferred to GPU memory, the multiplication is performed, and the result matrix C is transferred back to host memory. While conceptually simple, achieving peak performance leverages several key optimizations. rocBLAS handles complex memory layout considerations automatically, ensuring proper matrix alignment and padding to maximize utilization of AMD's matrix cores. The library also provides sophisticated batching capabilities for performing multiple similar multiplications efficiently.
 
-* **Core Formula**:  For matrices A (M×K) and B (K×N), rocBLAS implements :math:`C = \alpha \cdot op(A) \cdot op(B) + \beta \cdot C`, where op(X) allows for optional transpose operations
-
-* **Performance Characteristics**:
-    - Excellent performance for matrices fitting in device memory
-    - Leverages vendor-optimized BLAS implementations
-    - Uses sophisticated tiling and memory hierarchy optimizations
-
-* **Key Limitations**:
-    - Memory capacity constraints of single GPU
-    - Memory bandwidth bottlenecks between host and device
+While this approach delivers excellent performance for matrices that fit within GPU memory, it is ultimately constrained by both memory capacity and computational throughput of a single device. A modern GPU can deliver impressive TFLOP/s for matrix operations, but many scientific and AI workloads demand even higher computational capability. These performance demands, combined with memory limitations, motivate exploration of multi-GPU approaches that can harness both the aggregate compute power and memory capacity of multiple devices.
 
 .. figure:: _static/single-gpu-flow.png
-   :alt: Single GPU Matrix Multiplication Workflow
-   :align: center
-   
-   Workflow of simple matrix multiplication on single GPU
+  :alt: Single GPU Matrix Multiplication Workflow
+  :align: center
+
+  Simple matrix multiplication on single GPU
 
 Distributed Implementation
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
