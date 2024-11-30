@@ -4,7 +4,7 @@
     font-size: 12px; /* Adjust the font size as needed */
 }
 
-/* Reduce padding on left and right sides */
+/* Document layout and spacing */
 div.document {
     padding-left: 8px;  /* TWEAK: Reduce this value to decrease left padding */
     padding-right: 8px; /* TWEAK: Reduce this value to decrease right padding */
@@ -15,11 +15,25 @@ div.documentwrapper {
     width: 100%;
 }
 
-/* Adjust body content if needed */
+/* Body content and list spacing */
 div.body {
     max-width: none; /* Remove any max-width constraints */
     padding-left: 8px;  /* TWEAK: Adjust to fine-tune left content padding */
     padding-right: 8px; /* TWEAK: Adjust to fine-tune right content padding */
+}
+
+/* List spacing controls */
+.body li {
+    margin-bottom: 1em;  /* Space after each list item */
+}
+
+.body li li {
+    margin-bottom: 0.5em;  /* Less spacing for nested items */
+}
+
+.body ul, .body ol {
+    margin-top: 1em;
+    margin-bottom: 1em;
 }
 
 /* Style the Highlights admonition */
