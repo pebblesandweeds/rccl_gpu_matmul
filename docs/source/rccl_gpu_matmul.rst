@@ -73,16 +73,24 @@ Chunking B would force GPUs to constantly exchange partial results during comput
 Implementing Multi-GPU Matrix Multiplication
 --------------------------------------------
 
-Our implementation distributes large matrix multiplications across multiple GPUs by splitting matrix A into horizontal chunks while maintaining a complete copy of matrix B on each device. This section details the core libraries that enable this distribution and analyzes the resulting memory requirements across GPUs.
+Building on our distributed matrix multiplication concepts, this section walks through the practical implementation details. We'll examine how the code coordinates computation across multiple GPUs, diving into the key libraries that enable efficient distribution and the resulting memory patterns across devices.
 
-Core Components
-^^^^^^^^^^^^^^^
-Our multi-GPU implementation relies on two key libraries:
+Libraries and Implementation
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Our implementation leverages two core AMD libraries:
 
-* **rocBLAS**: Handles the actual matrix multiplication on each GPU through ``rocblas_sgemm``
-* **RCCL**: Manages inter-GPU communication through collective operations like broadcast and allgather
+**rocBLAS for Matrix Computation**
+    The `rocblas_sgemm` function handles the actual matrix multiplication on each GPU. After receiving its chunk of matrix A and complete copy of matrix B, each GPU executes a standard matrix multiplication operation. rocBLAS automatically optimizes this computation for AMD's matrix cores, managing internal memory layouts and compute scheduling.
 
-Let's examine how these components work together to enable efficient distributed computation.
+**RCCL for GPU Communication**
+    RCCL (ROCm Communication Collectives Library) provides efficient primitives for moving data between GPUs. While this is AMD's library, it maintains API compatibility with NVIDIA's NCCL - hence the `nccl` prefix in function names like `ncclBroadcast`. Our implementation uses two key RCCL operations:
+    
+    - ``ncclBroadcast`` distributes matrix B to all GPUs during initialization
+    - ``ncclAllGather`` combines partial results from each GPU's computation into the final output matrix
+    
+    RCCL handles the complexity of optimal data transfer paths between GPUs, utilizing direct GPU-to-GPU communication when available and automatically selecting the most efficient transfer methods based on system topology.
+
+The interaction between these libraries follows a clear pattern: RCCL first distributes the input data across devices, rocBLAS performs local computations on each GPU, and finally RCCL consolidates the results. This separation of concerns - RCCL for communication and rocBLAS for computation - allows each library to optimize its specific role while working together for efficient distributed processing.
 
 Memory Requirements
 ^^^^^^^^^^^^^^^^^^^
