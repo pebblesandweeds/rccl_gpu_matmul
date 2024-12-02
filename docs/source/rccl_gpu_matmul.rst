@@ -62,7 +62,55 @@ Through these design choices, we transform our earlier single-GPU implementation
 
    Distributed matrix multiplication across multiple GPUs
 
-Broadcasting matrix B instead of partitioning offers advantages for deep learning workloads, despite higher per-GPU memory usage. This approach eliminates inter-GPU communication since matrix B represents stable parameters (model weights during inference, parameter gradients during training) while matrix A contains the changing data stream (input activations or training examples). Computing even a single element C[i,j] of the output requires both the complete ith row of A and jth column of B - chunking B would force GPUs to constantly exchange partial results during computation rather than just at initialization and completion. The efficiency stems from this asymmetry - maintaining a complete copy of B on each device amortizes the initial broadcast cost across multiple computations of streaming A matrices. While alternatives like `Cannon's algorithm <https://en.wikipedia.org/wiki/Cannon%27s_algorithm>`_ provide more memory-efficient partitioning, the additional coordination overhead makes broadcasting B preferable given modern GPU memory capacities and deep learning's characteristic reuse of parameter matrices across batches.
+Broadcasting matrix B instead of partitioning it offers advantages for deep learning workloads, despite higher per-GPU memory usage. This approach eliminates inter-GPU communication since matrices A and B serve different purposes: 
+
+* Matrix B represents stable parameters (model weights during inference, parameter gradients during training)
+* Matrix A contains the changing data stream (input activations or training examples)
+* Computing any element C[i,j] requires both the complete ith row of A and jth column of B
+
+Chunking B would force GPUs to constantly exchange partial results during computation rather than just at initialization and completion. The efficiency comes from keeping a complete copy of B on each device - the initial broadcast cost is offset by being able to reuse B for multiple computations with streaming A matrices. While alternatives like `Cannon's algorithm <https://en.wikipedia.org/wiki/Cannon%27s_algorithm>`_ provide more memory-efficient partitioning, the additional coordination overhead makes broadcasting B preferable given modern GPU memory capacities and deep learning's characteristic reuse of parameter matrices across batches.
+
+Implementing Multi-GPU Matrix Multiplication
+--------------------------------------------
+
+Our implementation distributes large matrix multiplications across multiple GPUs by splitting matrix A into horizontal chunks while maintaining a complete copy of matrix B on each device. This section details the core libraries that enable this distribution and analyzes the resulting memory requirements across GPUs.
+
+Core Components
+^^^^^^^^^^^^^^^
+Our multi-GPU implementation relies on two key libraries:
+
+* **rocBLAS**: Handles the actual matrix multiplication on each GPU through ``rocblas_sgemm``
+* **RCCL**: Manages inter-GPU communication through collective operations like broadcast and allgather
+
+Let's examine how these components work together to enable efficient distributed computation.
+
+Memory Requirements
+^^^^^^^^^^^^^^^^^^^
+To understand the memory efficiency of our distributed approach, let's first look at the memory footprint of a single-GPU implementation for our 32K × 32K matrices. With single-precision floating point (4 bytes per element), each matrix requires:
+
+.. math::
+
+    32,768 \times 32,768 \times 4 \text{ bytes} \approx 4.29 \text{ GB}
+
+A complete matrix multiplication requires three matrices in GPU memory:
+    - Input matrix A: 4.29 GB
+    - Input matrix B: 4.29 GB
+    - Output matrix C: 4.29 GB
+
+Total VRAM required: ~12.87 GB
+
+Our distributed implementation across 8 GPUs transforms this footprint. Each GPU now holds:
+    - 1/8th chunk of matrix A: 4.29 GB ÷ 8 ≈ 536 MB
+    - Complete copy of matrix B: 4.29 GB
+    - 1/8th chunk of output matrix C: 536 MB
+
+Total per-GPU VRAM: ~5.36 GB
+
+This distribution strategy reduces per-GPU memory requirements by ~58% compared to the single-GPU approach, enabling us to handle significantly larger matrices by leveraging the aggregate memory capacity of multiple GPUs.
+
+---------------------------------
+
+
 
 Distribution Strategy
 ^^^^^^^^^^^^^^^^^^^^^
