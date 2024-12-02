@@ -121,6 +121,29 @@ This distribution strategy requires ~5.36 GB per GPU compared to the 12.87 GB ne
 
 It's worth noting that in real-world deep learning applications, we typically process batches of matrix multiplications rather than single operations. While batched operations are beyond the scope of this blog post, the memory distribution strategy demonstrated here - chunking A and C while broadcasting B - provides an efficient foundation for handling these larger workloads.
 
+Coordinating GPU Communication with RCCL
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+RCCL (ROCm Communication Collectives Library) provides efficient primitives for communication between multiple GPUs in a system. For our matrix multiplication implementation across 8 GPUs in a single host, understanding RCCL's core components and operations is essential.
+
+RCCL operates through communicator objects (ncclComm_t) that represent a collection of GPUs that can communicate with each other. Each GPU is assigned a unique rank (0 to 7 in our case) within the communicator, corresponding to their HIP device IDs. RCCL operations are asynchronous and tied to HIP streams, with each GPU requiring a dedicated stream to ensure proper synchronization.
+
+The library provides several communication primitives, but our implementation focuses on two key operations:
+
+* **Broadcast**: Copies data from one GPU (root) to all other GPUs. We use this to distribute matrix B to all GPUs efficiently, ensuring each device has the complete matrix for computation.
+
+* **AllGather**: Each GPU contributes a chunk of data that is gathered and made available to all GPUs. We use this to combine the partial results of matrix C from each GPU into the complete result matrix.
+
+RCCL automatically leverages dedicated hardware and protocols for GPU-to-GPU communication within our single host system, providing significantly better performance than standard PCIe transfers. The library handles the complexity of selecting optimal data transfer paths between GPUs based on the available hardware.
+
+Since RCCL operations are asynchronous, proper synchronization is necessary. Operations in the same stream execute sequentially, and error checking should be performed after synchronization rather than immediately after RCCL calls. Our implementation includes appropriate error handling and ensures proper cleanup of RCCL resources to prevent memory leaks.
+
+This foundation enables our multi-GPU matrix multiplication to efficiently distribute computation while minimizing the overhead of data movement between devices. The following sections will demonstrate how we implement these concepts in practice.
+
+---------------------------
+
+
+
 RCCL Integration
 ^^^^^^^^^^^^^^^^
 
