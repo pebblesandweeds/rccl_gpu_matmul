@@ -121,23 +121,41 @@ This distribution strategy requires ~5.36 GB per GPU compared to the 12.87 GB ne
 
 It's worth noting that in real-world deep learning applications, we typically process batches of matrix multiplications rather than single operations. While batched operations are beyond the scope of this blog post, the memory distribution strategy demonstrated here - chunking A and C while broadcasting B - provides an efficient foundation for handling these larger workloads.
 
-Coordinating GPU Communication with RCCL
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RCCL Implementation Considerations
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-After setting up our memory distribution strategy, we need mechanisms to efficiently move data between GPUs. This is where RCCL's communicator objects (ncclComm_t) come into play, providing the infrastructure for our GPUs to coordinate their work.
+When distributing matrix multiplication across multiple GPUs, several key factors influence overall system performance:
 
-Each GPU needs a dedicated HIP stream for RCCL operations to maintain proper execution ordering and prevent deadlocks. The streams ensure that broadcast, computation, and gather operations happen in the correct sequence on each device. RCCL operations are asynchronous - they queue work to be executed but return immediately, allowing the host program to continue setting up other operations.
+**Communication Overhead and Hardware**
 
-Our implementation's communication pattern has four main components:
+While splitting computation across GPUs provides more aggregate compute power, it introduces communication overhead that must be managed carefully. The most significant communication costs occur during:
 
-* Initialize RCCL context and streams for coordinating the GPUs
-* Use broadcast to distribute matrix B across all devices
-* Execute independent matrix multiplication on each GPU
-* Combine results using allGather to form the final matrix C
+* Initial distribution of matrix chunks across devices
+* Broadcasting matrix B to all GPUs
+* Final gathering of results
 
-To maintain correctness, we synchronize between operational phases. While RCCL operations themselves are asynchronous, we ensure completion of each phase before proceeding to the next through explicit synchronization points. This careful orchestration of computation and communication enables our implementation to achieve near-linear speedup across multiple GPUs while maintaining numerical accuracy.
+The impact of these transfers depends on the system's GPU interconnect topology. Modern servers typically connect GPUs through PCIe (offering ~64GB/s bidirectional bandwidth) or vendor-specific interconnects like AMD's Infinity Fabric™ (providing higher bandwidth direct GPU-to-GPU communication). RCCL automatically selects optimal transfer paths based on the available hardware.
 
-The next section will walk through the code implementation of this coordination pattern, showing how we integrate RCCL operations with our matrix multiplication workflow.
+**Stream Management and Execution Flow**
+
+Our implementation uses HIP streams to manage execution flow on each GPU. Streams provide essential mechanisms for:
+
+* Queueing operations in the correct order
+* Enabling asynchronous execution where possible
+* Maintaining synchronization points between computation phases
+
+While RCCL operations themselves are asynchronous, we ensure completion of each phase before proceeding to the next through explicit synchronization points. This careful orchestration of computation and communication enables our implementation to achieve near-linear speedup across multiple GPUs while maintaining numerical accuracy.
+
+**Workload Distribution Strategy**
+
+The size of matrix chunks assigned to each GPU presents a straightforward tradeoff:
+
+* Larger chunks reduce the relative overhead of communication
+* Smaller chunks provide more flexible load balancing
+
+For our matrix multiplication case, we opted for simple equal-sized chunks since the computation is naturally balanced. This approach minimizes coordination overhead while maintaining good GPU utilization across devices.
+
+Through this design, we minimize the overhead inherent in distributed computation while maximizing hardware utilization. The approach scales efficiently with additional GPUs while preserving the computational benefits of rocBLAS's optimized matrix operations on each device.
 
 Code Walkthrough
 ^^^^^^^^^^^^^^^^^
