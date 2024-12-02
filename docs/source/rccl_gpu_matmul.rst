@@ -124,82 +124,106 @@ It's worth noting that in real-world deep learning applications, we typically pr
 Coordinating GPU Communication with RCCL
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-RCCL (ROCm Communication Collectives Library) provides efficient primitives for communication between multiple GPUs in a system. For our matrix multiplication implementation across 8 GPUs in a single host, understanding RCCL's core components and operations is essential.
+After setting up our memory distribution strategy, we need mechanisms to efficiently move data between GPUs. This is where RCCL's communicator objects (ncclComm_t) come into play, providing the infrastructure for our GPUs to coordinate their work.
 
-RCCL operates through communicator objects (ncclComm_t) that represent a collection of GPUs that can communicate with each other. Each GPU is assigned a unique rank (0 to 7 in our case) within the communicator, corresponding to their HIP device IDs. RCCL operations are asynchronous and tied to HIP streams, with each GPU requiring a dedicated stream to ensure proper synchronization.
+Each GPU needs a dedicated HIP stream for RCCL operations to maintain proper execution ordering and prevent deadlocks. The streams ensure that broadcast, computation, and gather operations happen in the correct sequence on each device. RCCL operations are asynchronous - they queue work to be executed but return immediately, allowing the host program to continue setting up other operations.
 
-The library provides several communication primitives, but our implementation focuses on two key operations:
+Our implementation's communication pattern has four main components:
 
-* **Broadcast**: Copies data from one GPU (root) to all other GPUs. We use this to distribute matrix B to all GPUs efficiently, ensuring each device has the complete matrix for computation.
+* Initialize RCCL context and streams for coordinating the GPUs
+* Use broadcast to distribute matrix B across all devices
+* Execute independent matrix multiplication on each GPU
+* Combine results using allGather to form the final matrix C
 
-* **AllGather**: Each GPU contributes a chunk of data that is gathered and made available to all GPUs. We use this to combine the partial results of matrix C from each GPU into the complete result matrix.
+To maintain correctness, we synchronize between operational phases. While RCCL operations themselves are asynchronous, we ensure completion of each phase before proceeding to the next through explicit synchronization points. This careful orchestration of computation and communication enables our implementation to achieve near-linear speedup across multiple GPUs while maintaining numerical accuracy.
 
-RCCL automatically leverages dedicated hardware and protocols for GPU-to-GPU communication within our single host system, providing significantly better performance than standard PCIe transfers. The library handles the complexity of selecting optimal data transfer paths between GPUs based on the available hardware.
+The next section will walk through the code implementation of this coordination pattern, showing how we integrate RCCL operations with our matrix multiplication workflow.
 
-Since RCCL operations are asynchronous, proper synchronization is necessary. Operations in the same stream execute sequentially, and error checking should be performed after synchronization rather than immediately after RCCL calls. Our implementation includes appropriate error handling and ensures proper cleanup of RCCL resources to prevent memory leaks.
+Code Walkthrough
+^^^^^^^^^^^^^^^^^
 
-This foundation enables our multi-GPU matrix multiplication to efficiently distribute computation while minimizing the overhead of data movement between devices. The following sections will demonstrate how we implement these concepts in practice.
+Let's walk through the key components of our multi-GPU matrix multiplication implementation, examining how RCCL coordination, memory management, and computation work together to achieve high performance.
 
----------------------------
-
-
-
-RCCL Integration
-^^^^^^^^^^^^^^^^
-
-RCCL provides several collective operations for multi-GPU communication. Our implementation primarily uses two:
-
-1. **Broadcast**: Distributes Matrix B to all GPUs
+The first critical phase involves setting up the RCCL context and allocating memory across our GPU array. Each GPU needs its own chunk of matrix A, a full copy of matrix B, and space for its portion of the result matrix C:
 
 .. code-block:: c
 
-    // Broadcasting matrix B to all GPUs
-    rccl_broadcast_matrix(rccl_ctx, d_B, N * N);
+   // Initialize RCCL context
+   RCCLContext* rccl_ctx = rccl_init(num_gpus);
+   for (int i = 0; i < num_gpus; i++) {
+       CHECK_HIP(hipSetDevice(i));
+       CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
+       CHECK_HIP(hipMalloc(&d_B[i], full_size));
+       CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
+       CHECK_HIP(hipMalloc(&d_C_final[i], full_size));
+       // Copy data to devices
+       CHECK_HIP(hipMemcpyAsync(d_A_chunks[i],
+                               h_A + (i * chunk_size * N),
+                               chunk_bytes,
+                               hipMemcpyHostToDevice,
+                               rccl_ctx->streams[i]));
+   }
 
-2. **AllGather**: Combines partial results into the final matrix
-
-.. code-block:: c
-
-    // Gathering results from all GPUs
-    rccl_gather_matrix_chunks(rccl_ctx, d_C_chunks, d_C_final, chunk_size * N);
-
-Key Implementation Components
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-1. **RCCL Context Setup**
-
-.. code-block:: c
-
-    // Initialize RCCL context
-    RCCLContext* rccl_ctx = rccl_init(num_gpus);
-
-2. **Memory Allocation and Data Distribution**
+Once memory is allocated, the actual matrix multiplication operation is handled by rocBLAS, with each GPU working on its assigned chunk of matrix A while using the complete matrix B:
 
 .. code-block:: c
 
-    size_t chunk_size = N / num_gpus;
-    size_t chunk_bytes = chunk_size * N * sizeof(float);
+   void perform_matrix_multiplication(
+       rocblas_handle* handles,
+       float** d_A_chunks,
+       float** d_B,
+       float** d_C_chunks,
+       int N,
+       int chunk_size,
+       int num_gpus,
+       hipStream_t* streams,
+       int NUM_RUNS) {
+       const float alpha = 1.0f;
+       const float beta = 0.0f;
+       for (int i = 0; i < num_gpus; i++) {
+           CHECK_HIP(hipSetDevice(i));
+           CHECK_ROCBLAS(rocblas_sgemm(handles[i],
+                                      rocblas_operation_none,
+                                      rocblas_operation_none,
+                                      N, chunk_size, N,
+                                      &alpha,
+                                      d_B[i], N,
+                                      d_A_chunks[i], N,
+                                      &beta,
+                                      d_C_chunks[i], N));
+       }
+   }
 
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipSetDevice(i));
-        CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
-        CHECK_HIP(hipMalloc(&d_B[i], full_size));
-        CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
-    }
-
-3. **Parallel Matrix Multiplication**
+The RCCL library manages all communication between GPUs, first broadcasting matrix B to all devices and later gathering the partial results:
 
 .. code-block:: c
 
-    CHECK_ROCBLAS(rocblas_sgemm(handles[i],
-                           rocblas_operation_none,
-                           rocblas_operation_none,
-                           N, chunk_size, N,
-                           &alpha,
-                           d_B[i], N,
-                           d_A_chunks[i], N,
-                           &beta,
-                           d_C_chunks[i], N));
+   // Broadcast matrix B to all GPUs
+   rccl_broadcast_matrix(rccl_ctx, d_B, N * N);
+   rccl_sync_and_check(rccl_ctx);
+
+   // After computation, gather results
+   rccl_gather_matrix_chunks(rccl_ctx, d_C_chunks, d_C_final, chunk_size * N);
+   rccl_sync_and_check(rccl_ctx);
+
+To track performance across all GPUs, we use HIP events to measure computation time and calculate achieved TFLOPS for each device:
+
+.. code-block:: c
+
+   hipEvent_t starts[num_gpus], stops[num_gpus];
+   for (int i = 0; i < num_gpus; i++) {
+       CHECK_HIP(hipEventCreate(&starts[i]));
+       CHECK_HIP(hipEventRecord(starts[i], streams[i]));
+       // Perform computation
+       CHECK_HIP(hipEventRecord(stops[i], streams[i]));
+       float compute_time;
+       CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
+       double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
+       printf("GPU %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
+              i, compute_time, tflops);
+   }
+
+This implementation demonstrates how proper coordination between RCCL communication and rocBLAS computation enables efficient scaling across multiple GPUs while maintaining the high performance we achieved in our single-GPU version.
 
 Performance Analysis
 --------------------
