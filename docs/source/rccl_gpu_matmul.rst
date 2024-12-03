@@ -200,35 +200,35 @@ Next, we use RCCL to broadcast matrix B to all GPUs before performing our comput
        CHECK_NCCL(ncclGroupEnd());
    }
 
-Once the broadcast is complete, each GPU performs matrix multiplication on its assigned chunk of matrix A while utilizing its full copy of matrix B. We pass matrix B as the first input matrix to the rocBLAS API instead of matrix A because of the associative property of matrix multiplication. Computing :math:`B * A` produces the same result as :math:`(A * B)^T`, which allows us to avoid explicit matrix transposition while preserving correct output dimensions:
+Once the broadcast is complete, each GPU performs matrix multiplication on its assigned chunk of matrix A while utilizing its full copy of matrix B. We pass matrix B as the first input matrix to the rocBLAS API instead of matrix A. This works because our matrices are in row-major order while rocBLAS expects column-major order. When passing row-major matrices to rocBLAS's column-major API, each matrix is implicitly transposed. So passing :math:`(B,A)` in row-major becomes :math:`B^T * A^T` in column-major, which equals :math:`(A * B)^T`. When we read the result back in row-major, it's transposed again, giving us :math:`A * B`. This lets us avoid explicit transpose operations while getting correct results:
 
 .. code-block:: c
 
-    void perform_matrix_multiplication(
-        rocblas_handle* handles,
-        float** d_A_chunks,
-        float** d_B,
-        float** d_C_chunks,
-        int N,
-        int chunk_size,
-        int num_gpus,
-        hipStream_t* streams,
-        int NUM_RUNS) {
-        const float alpha = 1.0f;
-        const float beta = 0.0f;
-        for (int i = 0; i < num_gpus; i++) {
-            CHECK_HIP(hipSetDevice(i));
-            CHECK_ROCBLAS(rocblas_sgemm(handles[i],
-                                       rocblas_operation_none,
-                                       rocblas_operation_none,
-                                       N, chunk_size, N,
-                                       &alpha,
-                                       d_B[i], N,
-                                       d_A_chunks[i], N,
-                                       &beta,
-                                       d_C_chunks[i], N));
-        }
-    }
+  void perform_matrix_multiplication(
+      rocblas_handle* handles,
+      float** d_A_chunks,
+      float** d_B,
+      float** d_C_chunks,
+      int N,
+      int chunk_size,
+      int num_gpus,
+      hipStream_t* streams,
+      int NUM_RUNS) {
+      const float alpha = 1.0f;
+      const float beta = 0.0f;
+      for (int i = 0; i < num_gpus; i++) {
+          CHECK_HIP(hipSetDevice(i));
+          CHECK_ROCBLAS(rocblas_sgemm(handles[i],
+                                     rocblas_operation_none,
+                                     rocblas_operation_none,
+                                     N, chunk_size, N,
+                                     &alpha,
+                                     d_B[i], N,
+                                     d_A_chunks[i], N,
+                                     &beta,
+                                     d_C_chunks[i], N));
+      }
+  }
 
 After the multiplication, we gather the results from all GPUs:
 
