@@ -230,39 +230,44 @@ Once the broadcast is complete, each GPU performs matrix multiplication on its a
       }
   }
 
-After the multiplication, we gather the results from all GPUs:
+After the multiplication, we collect the computed chunks using ncclAllGather - each GPU contributes its portion ``chunks[i]`` and every GPU receives a complete copy in ``result[i]``. While each GPU ends up with an identical copy of the full result, we only copy GPU[0] version back to host memory:
 
 .. code-block:: c
 
-    void rccl_gather_matrix_chunks(RCCLContext* ctx, float** chunks, float** result,
-                                 size_t chunk_elements) {
-        CHECK_NCCL(ncclGroupStart());
-        for (int i = 0; i < ctx->num_gpus; i++) {
-            CHECK_HIP(hipSetDevice(i));
-            CHECK_NCCL(ncclAllGather(chunks[i], result[i], chunk_elements,
-                                    ncclFloat, ctx->comms[i], ctx->streams[i]));
-        }
-        CHECK_NCCL(ncclGroupEnd());
-    }
+   void rccl_gather_matrix_chunks(RCCLContext* ctx, float** chunks, float** result,
+                                size_t chunk_elements) {
+       CHECK_NCCL(ncclGroupStart());
+       for (int i = 0; i < ctx->num_gpus; i++) {
+           CHECK_HIP(hipSetDevice(i));
+           CHECK_NCCL(ncclAllGather(chunks[i], result[i], chunk_elements,
+                                   ncclFloat, ctx->comms[i], ctx->streams[i]));
+       }
+       CHECK_NCCL(ncclGroupEnd());
+   }
 
-To track performance across all GPUs, we use HIP events to measure computation time and calculate achieved TFLOPS for each device:
+   // In main(), we only copy GPU 0's result back to host
+   printf("Copying results back to host\n");
+   CHECK_HIP(hipSetDevice(0));
+   CHECK_HIP(hipMemcpy(h_C, d_C_final[0], full_size, hipMemcpyDeviceToHost));
+
+To track performance across all GPUs, we use HIP events to measure computation time and calculate achieved TFLOPS for each device. Each GPU handles a portion of the matrix multiplication - since the input is evenly divided, each GPU does an equal share of the total floating point operations. The code records the start and stop times using HIP events, calculates how long each GPU took in milliseconds, and converts this timing into TFLOPS (trillions of floating point operations per second) to show each GPU's computational speed:
 
 .. code-block:: c
 
-    hipEvent_t starts[num_gpus], stops[num_gpus];
-    for (int i = 0; i < num_gpus; i++) {
-        CHECK_HIP(hipEventCreate(&starts[i]));
-        CHECK_HIP(hipEventRecord(starts[i], streams[i]));
-        // Perform computation
-        CHECK_HIP(hipEventRecord(stops[i], streams[i]));
-        float compute_time;
-        CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
-        double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
-        printf("GPU %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
-               i, compute_time, tflops);
-    }
+   hipEvent_t starts[num_gpus], stops[num_gpus];
+   for (int i = 0; i < num_gpus; i++) {
+       CHECK_HIP(hipEventCreate(&starts[i]));
+       CHECK_HIP(hipEventRecord(starts[i], streams[i]));
+       // Perform computation
+       CHECK_HIP(hipEventRecord(stops[i], streams[i]));
+       float compute_time;
+       CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
+       double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
+       printf("GPU %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
+              i, compute_time, tflops);
+   }
 
-This implementation demonstrates how proper coordination between RCCL communication and rocBLAS computation enables efficient scaling across multiple GPUs while maintaining the high performance we achieved in our single-GPU version.
+This implementation shows how we can scale matrix multiplication across multiple GPUs by combining RCCL's inter-GPU communication with rocBLAS's optimized computation. By dividing work evenly, coordinating data movement with ``ncclBroadcast`` and ``ncclAllGather`` operations, and letting each GPU process its chunk independently, we maintain the high performance of rocBLAS while distributing the computational load across the available hardware.
 
 Performance Analysis
 --------------------
