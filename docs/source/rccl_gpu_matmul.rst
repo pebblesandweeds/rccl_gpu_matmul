@@ -29,7 +29,7 @@ Scaling Matrix Multiplication: From Single to Multi-GPU Systems
 
 Single-GPU Matrix Multiplication
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-The rocBLAS ``sgemm`` API implements high-performance single precision (fp32) matrix multiplication using AMD's matrix core accelerators (detailed formula and optimizations covered in our `previous post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html#matrix-multiplication-formulas>`_). The core workflow involves transferring input matrices A and B to GPU memory, executing the multiplication, and transferring result matrix C back to host memory.
+The rocBLAS ``rocblas_sgemm`` API implements high-performance single precision (fp32) matrix multiplication using AMD's matrix core accelerators (detailed formula and optimizations are covered in our `previous post <https://blog.pebblesandweeds.com/gpu_matmul_blog.html#matrix-multiplication-formulas>`_). The core workflow involves transferring input matrices A and B to GPU memory, executing the multiplication, and transferring result matrix C back to host memory.
 
 While this appears straightforward, achieving peak performance requires careful orchestration of memory transfers, matrix layouts, and compute scheduling. Thankfully, rocBLAS abstracts away many of these complexities - it handles matrix padding and alignment to maximize memory throughput, manages optimal blocking strategies for AMD's matrix cores, and provides batching capabilities for efficient execution of multiple multiplications. This allows developers to focus on high-level algorithm design while the library manages the hardware-specific optimizations.
 
@@ -48,11 +48,11 @@ Extending beyond a single device, we can leverage multiple GPUs within a host sy
 
 Our distributed implementation employs a horizontal partitioning strategy that balances computational efficiency with communication overhead through several key mechanisms:
 
-* **Matrix Distribution** - Matrix A is split horizontally across GPUs while matrix B is broadcast in its entirety to each device, allowing independent processing of matrix partitions using rocBLAS primitives.
+* **Matrix Distribution** - Matrix A is split horizontally across GPUs while matrix B is broadcast in its entirety to each device using RCCL, allowing independent processing of matrix partitions using rocBLAS primitives.
 
 * **Result Consolidation**: The system combines partial results from each device through RCCL's allGather operation, constructing the final output matrix
 
-* **Performance Optimization**: The approach maximizes efficiency through balanced computational load from the horizontal split of A, eliminating the inter-GPU communication by broadcasting B, and minimal overhead during result collection via allGather
+* **Performance Optimization**: The approach maximizes efficiency through balanced computational load from the horizontal split of A, minimizing inter-GPU communication through a single broadcast of B, and requiring only one collective operation during result collection via allGather
 
 Through these design choices, we transform our earlier single-GPU implementation into a scalable distributed system that preserves the computational efficiency of rocBLAS while extending across multiple devices.
 
@@ -62,18 +62,16 @@ Through these design choices, we transform our earlier single-GPU implementation
 
    Distributed matrix multiplication across multiple GPUs
 
-Broadcasting matrix B instead of partitioning it offers advantages for deep learning workloads, despite higher per-GPU memory usage. This approach eliminates inter-GPU communication since matrices A and B serve different purposes: 
+Broadcasting matrix B instead of partitioning it optimizes our approach for deep learning workloads. While this requires more memory per GPU, it significantly reduces communication overhead based on how matrices A and B are used in practice:
 
-* Matrix B represents stable parameters (model weights during inference, parameter gradients during training)
-* Matrix A contains the changing data stream (input activations or training examples)
-* Computing any element C[i,j] requires both the complete ith row of A and jth column of B
+* Matrix B contains model weights that remain constant across many computations
+* Matrix A holds the activations or embeddings that change with each forward pass
+* Matrix multiplication requires each row of A to interact with every column of B. Partitioning B by columns would force GPUs to exchange partial results, since computing a single output row needs access to all of B's columns
 
-Chunking B would force GPUs to constantly exchange partial results during computation rather than just at initialization and completion. The efficiency comes from keeping a complete copy of B on each device - the initial broadcast cost is offset by being able to reuse B for multiple computations with streaming A matrices. While alternatives like `Cannon's algorithm <https://en.wikipedia.org/wiki/Cannon%27s_algorithm>`_ provide more memory-efficient partitioning, the additional coordination overhead makes broadcasting B preferable given modern GPU memory capacities and deep learning's characteristic reuse of parameter matrices across batches.
+Given modern GPU memory capacities and the characteristic reuse of parameter matrices in deep learning workloads, the higher memory cost of broadcasting B is outweighed by the reduced communication overhead.
 
 Implementing Multi-GPU Matrix Multiplication
 --------------------------------------------
-
-Building on our distributed matrix multiplication concepts, this section walks through the practical implementation details. We'll examine how the code coordinates computation across multiple GPUs, diving into the key libraries that enable efficient distribution and the resulting memory patterns across devices.
 
 Implementation Libraries 
 ^^^^^^^^^^^^^^^^^^^^^^^^
