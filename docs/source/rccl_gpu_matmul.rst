@@ -152,99 +152,115 @@ Through this design, we minimize the overhead inherent in distributed computatio
 
 Code Walkthrough
 ^^^^^^^^^^^^^^^^
-
 Let's walk through the key components of our multi-GPU matrix multiplication implementation, examining how RCCL coordination, memory management, and computation work together to achieve high performance.
 
-The first critical phase involves setting up the RCCL context and allocating memory across our GPU array. Each GPU needs its own chunk of matrix A, a full copy of matrix B, and space for its portion of the result matrix C:
+The first step involves setting up the RCCL context and allocating memory across our GPU array. Each GPU needs its own chunk of matrix A, a full copy of matrix B, and space for its portion of the result matrix C:
 
 .. code-block:: c
 
-  // Initialize RCCL context
-  RCCLContext* rccl_ctx = rccl_init(num_gpus);
-  for (int i = 0; i < num_gpus; i++) {
-      CHECK_HIP(hipSetDevice(i));
-      CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
-      CHECK_HIP(hipMalloc(&d_B[i], full_size));
-      CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
-      CHECK_HIP(hipMalloc(&d_C_final[i], full_size));
-      // Copy data to devices
-      CHECK_HIP(hipMemcpyAsync(d_A_chunks[i],
-                              h_A + (i * chunk_size * N),
-                              chunk_bytes,
-                              hipMemcpyHostToDevice,
-                              rccl_ctx->streams[i]));
-  }
+    // Initialize RCCL context
+    RCCLContext* rccl_ctx = rccl_init(num_gpus);
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipSetDevice(i));
+        CHECK_HIP(hipMalloc(&d_A_chunks[i], chunk_bytes));
+        CHECK_HIP(hipMalloc(&d_B[i], full_size));
+        CHECK_HIP(hipMalloc(&d_C_chunks[i], chunk_bytes));
+        CHECK_HIP(hipMalloc(&d_C_final[i], full_size));
+        // Copy data to devices
+        CHECK_HIP(hipMemcpyAsync(d_A_chunks[i],
+                               h_A + (i * chunk_size * N),
+                               chunk_bytes,
+                               hipMemcpyHostToDevice,
+                               rccl_ctx->streams[i]));
+    }
 
-The ``CHECK_HIP`` macro below (defined in `utils.h <https://github.com/pebblesandweeds/rccl_gpu_matmul/blob/main/c/include/utils.h>`_) wraps all HIP API calls to provide error handling. The macro checks the returned `hipError_t` status code and terminates execution with an error message if the operation fails:
-
-.. code-block:: c
-
-  #define CHECK_HIP(stmt) do {                                 
-      hipError_t err = stmt;                                   
-      if (err != hipSuccess) {                                 
-          printf("HIP error: %s\n", hipGetErrorString(err));   
-          exit(1);                                             
-      }                                                        
-  } while(0)
-
-Once memory is allocated, each GPU processes its assigned chunk of matrix A while utilizing a complete copy of matrix B. We pass matrix B as the first input matrix to rocBLAS instead of matrix A because of the associative property of matrix multiplication. Computing (B × A) produces the same result as (A × B)T, which allows us to avoid explicit matrix transposition while preserving correct output dimensions:
+The ``CHECK_HIP`` macro below wraps all HIP API calls to provide error handling. The macro checks the returned `hipError_t` status code and terminates execution with an error message if the operation fails:
 
 .. code-block:: c
 
- void perform_matrix_multiplication(
-     rocblas_handle* handles,
-     float** d_A_chunks,
-     float** d_B,
-     float** d_C_chunks,
-     int N,
-     int chunk_size,
-     int num_gpus,
-     hipStream_t* streams,
-     int NUM_RUNS) {
-     const float alpha = 1.0f;
-     const float beta = 0.0f;
-     for (int i = 0; i < num_gpus; i++) {
-         CHECK_HIP(hipSetDevice(i));
-         CHECK_ROCBLAS(rocblas_sgemm(handles[i],
-                                    rocblas_operation_none,
-                                    rocblas_operation_none,
-                                    N, chunk_size, N,
-                                    &alpha,
-                                    d_B[i], N,
-                                    d_A_chunks[i], N,
-                                    &beta,
-                                    d_C_chunks[i], N));
-     }
- }
+    #define CHECK_HIP(stmt) do {
+        hipError_t err = stmt;
+        if (err != hipSuccess) {
+            printf("HIP error: %s\n", hipGetErrorString(err));
+            exit(1);
+        }
+    } while(0)
 
-After the multiplication, we coordinate data movement between GPUs using RCCL operations:
+Next, we use RCCL to broadcast matrix B to all GPUs before performing our computation. The ``ncclGroupStart`` and ``ncclGroupEnd`` functions create a collective communication group that allows multiple NCCL operations to be executed together for improved performance, while the ``ncclBroadcast`` function copies data from a source GPU (specified by rank 0) to all other GPUs in the communicator, ensuring each device has an identical copy of matrix B:
 
 .. code-block:: c
 
-  // Broadcast matrix B to all GPUs
-  rccl_broadcast_matrix(rccl_ctx, d_B, N * N);
-  rccl_sync_and_check(rccl_ctx);
+   void rccl_broadcast_matrix(RCCLContext* ctx, float** send_data, size_t elements) {
+       CHECK_NCCL(ncclGroupStart());
+       for (int i = 0; i < ctx->num_gpus; i++) {
+           CHECK_HIP(hipSetDevice(i));
+           CHECK_NCCL(ncclBroadcast(send_data[i], send_data[i], elements,
+                                   ncclFloat, 0, ctx->comms[i], ctx->streams[i]));
+       }
+       CHECK_NCCL(ncclGroupEnd());
+   }
 
-  // After computation, gather results
-  rccl_gather_matrix_chunks(rccl_ctx, d_C_chunks, d_C_final, chunk_size * N);
-  rccl_sync_and_check(rccl_ctx);
+Once the broadcast is complete, each GPU performs matrix multiplication on its assigned chunk of matrix A while utilizing its full copy of matrix B. We pass matrix B as the first input matrix to the rocBLAS API instead of matrix A because of the associative property of matrix multiplication. Computing :math:`B * A` produces the same result as :math:`(A * B)^T`, which allows us to avoid explicit matrix transposition while preserving correct output dimensions:
+
+.. code-block:: c
+
+    void perform_matrix_multiplication(
+        rocblas_handle* handles,
+        float** d_A_chunks,
+        float** d_B,
+        float** d_C_chunks,
+        int N,
+        int chunk_size,
+        int num_gpus,
+        hipStream_t* streams,
+        int NUM_RUNS) {
+        const float alpha = 1.0f;
+        const float beta = 0.0f;
+        for (int i = 0; i < num_gpus; i++) {
+            CHECK_HIP(hipSetDevice(i));
+            CHECK_ROCBLAS(rocblas_sgemm(handles[i],
+                                       rocblas_operation_none,
+                                       rocblas_operation_none,
+                                       N, chunk_size, N,
+                                       &alpha,
+                                       d_B[i], N,
+                                       d_A_chunks[i], N,
+                                       &beta,
+                                       d_C_chunks[i], N));
+        }
+    }
+
+After the multiplication, we gather the results from all GPUs:
+
+.. code-block:: c
+
+    void rccl_gather_matrix_chunks(RCCLContext* ctx, float** chunks, float** result,
+                                 size_t chunk_elements) {
+        CHECK_NCCL(ncclGroupStart());
+        for (int i = 0; i < ctx->num_gpus; i++) {
+            CHECK_HIP(hipSetDevice(i));
+            CHECK_NCCL(ncclAllGather(chunks[i], result[i], chunk_elements,
+                                    ncclFloat, ctx->comms[i], ctx->streams[i]));
+        }
+        CHECK_NCCL(ncclGroupEnd());
+    }
 
 To track performance across all GPUs, we use HIP events to measure computation time and calculate achieved TFLOPS for each device:
 
 .. code-block:: c
 
-  hipEvent_t starts[num_gpus], stops[num_gpus];
-  for (int i = 0; i < num_gpus; i++) {
-      CHECK_HIP(hipEventCreate(&starts[i]));
-      CHECK_HIP(hipEventRecord(starts[i], streams[i]));
-      // Perform computation
-      CHECK_HIP(hipEventRecord(stops[i], streams[i]));
-      float compute_time;
-      CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
-      double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
-      printf("GPU %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
-             i, compute_time, tflops);
-  }
+    hipEvent_t starts[num_gpus], stops[num_gpus];
+    for (int i = 0; i < num_gpus; i++) {
+        CHECK_HIP(hipEventCreate(&starts[i]));
+        CHECK_HIP(hipEventRecord(starts[i], streams[i]));
+        // Perform computation
+        CHECK_HIP(hipEventRecord(stops[i], streams[i]));
+        float compute_time;
+        CHECK_HIP(hipEventElapsedTime(&compute_time, starts[i], stops[i]));
+        double tflops = (chunk_flops / (compute_time / 1000.0)) / 1e12;
+        printf("GPU %d: Time: %.2f ms, Performance: %.2f TFLOPS\n",
+               i, compute_time, tflops);
+    }
 
 This implementation demonstrates how proper coordination between RCCL communication and rocBLAS computation enables efficient scaling across multiple GPUs while maintaining the high performance we achieved in our single-GPU version.
 
