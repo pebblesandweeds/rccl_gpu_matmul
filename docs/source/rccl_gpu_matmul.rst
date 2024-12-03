@@ -73,24 +73,24 @@ Given modern GPU memory capacities and the characteristic reuse of parameter mat
 Implementing Multi-GPU Matrix Multiplication
 --------------------------------------------
 
-Implementation Libraries 
+Implementation Libraries
 ^^^^^^^^^^^^^^^^^^^^^^^^
 Our implementation leverages two core AMD libraries:
 
 **rocBLAS for Matrix Computation**
 
-The `rocblas_sgemm` function handles the actual matrix multiplication on each GPU. After receiving its chunk of matrix A and complete copy of matrix B, each GPU executes a standard matrix multiplication operation. rocBLAS automatically optimizes this computation for AMD's matrix cores, managing internal memory layouts and compute scheduling.
+The ``rocblas_sgemm`` API handles matrix multiplication on each GPU. We covered the single-GPU implementation in our `previous blog <https://blog.pebblesandweeds.com/gpu_matmul_blog.html#rocblas-sgemm-api>`_, the multi-GPU version works similarly - each device executes its own matrix multiplication after receiving its portion of matrix A and a complete copy of matrix B. rocBLAS optimizes these computations for AMD's matrix cores, managing memory layouts and compute scheduling automatically.
 
 **RCCL for GPU Communication**
 
-RCCL (ROCm Communication Collectives Library) provides efficient primitives for moving data between GPUs. While this is AMD's library, it maintains API compatibility with NVIDIA's NCCL - hence the `nccl` prefix in function names like `ncclBroadcast`. Our implementation uses two key RCCL operations:
+RCCL (ROCm Communication Collectives Library) provides efficient primitives for moving data between GPUs. While this is AMD's library, it maintains API compatibility with NVIDIA's NCCL - hence the ``nccl`` prefix in function names like ``ncclBroadcast``. Our implementation uses two key RCCL operations:
 
 * ``ncclBroadcast`` distributes matrix B to all GPUs during initialization
 * ``ncclAllGather`` combines partial results from each GPU's computation into the final output matrix
 
 RCCL handles the complexity of optimal data transfer paths between GPUs, utilizing direct GPU-to-GPU communication when available and automatically selecting the most efficient transfer methods based on system topology.
 
-The interaction between these libraries follows a clear pattern: RCCL first distributes the input data across devices, rocBLAS performs local computations on each GPU, and finally RCCL consolidates the results. This separation of concerns - RCCL for communication and rocBLAS for computation - allows each library to optimize its specific role while working together for efficient distributed processing.
+The interaction between these libraries follows a clear pattern: RCCL first distributes the input data across devices, rocBLAS performs local computations on each GPU, and finally RCCL consolidates the results. This separation of tasks - RCCL for communication and rocBLAS for computation - allows each library to optimize its specific role while working together for efficient distributed processing.
 
 Memory Requirements
 ^^^^^^^^^^^^^^^^^^^
@@ -101,11 +101,11 @@ Let's examine the memory distribution patterns across GPUs in our matrix multipl
 
    32,768 \times 32,768 \times 4 \text{ bytes} \approx 4.29 \text{ GB}
 
-While these matrices are modest in size for modern enterprise GPUs, they serve as an example for understanding the memory efficiency benefits of distributed computation.
+While modern enterprise GPUs can handle much larger matrices, this size provides a practical example for demonstrating how distributed computation reduces memory requirements per device.
 
 **Single-GPU Memory Footprint**
 
-When running matrix multiplication on a single GPU using rocBLAS (as covered in our previous blog post), we need all three matrices to reside in device memory. With each matrix requiring 4.29 GB, our total VRAM usage is ~12.87 GB for matrices A, B, and C. While this memory footprint is well within the capabilities of modern GPUs, by distributing these matrices across devices we can reduce the per-GPU memory requirements, paving the way for larger computations or processing multiple matrix multiplications in parallel.
+When running matrix multiplication on a single GPU using rocBLAS, we need all three matrices to reside in device memory. With each matrix requiring 4.29 GB, our total VRAM usage is ~12.87 GB for matrices A, B, and C. While this memory footprint is within the capabilities of modern GPUs, distributing these matrices across devices we can reduce the per-GPU memory requirements, allowing us to perform larger computations and to process multiple matrix multiplications in parallel (batches).
 
 **Distributed Memory Layout**
 
@@ -117,7 +117,7 @@ Our 8-GPU implementation reduces per-device memory usage through selective matri
 
 This distribution strategy requires ~5.36 GB per GPU compared to the 12.87 GB needed for single-GPU execution. The reduction stems from dividing matrices A and C across devices while broadcasting B to each GPU. While in this example our memory savings are modest, this pattern becomes increasingly important when scaling to larger matrices or processing multiple matrix multiplications in parallel.
 
-It's worth noting that in real-world deep learning applications, we typically process batches of matrix multiplications rather than single operations. While batched operations are beyond the scope of this blog post, the memory distribution strategy demonstrated here - chunking A and C while broadcasting B - provides an efficient foundation for handling these larger workloads.
+It's worth noting that in real world deep learning applications, we typically process batches of matrix multiplications rather than single operations. While batched operations are beyond the scope of this blog post, the memory distribution strategy demonstrated here (chunking A and C while broadcasting B) provides a foundation for handling these larger workloads using less VRAM.
 
 RCCL Implementation Considerations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -130,28 +130,23 @@ While splitting computation across GPUs provides more aggregate compute power, i
 
 * Initial distribution of matrix chunks across devices
 * Broadcasting matrix B to all GPUs
-* Final gathering of results
+* Final gathering of results using ncclAllGather
 
-The impact of these transfers depends on the system's GPU interconnect topology. Modern servers typically connect GPUs through PCIe (offering ~64GB/s bidirectional bandwidth) or vendor-specific interconnects like AMD's Infinity Fabric™ (providing higher bandwidth direct GPU-to-GPU communication). RCCL automatically selects optimal transfer paths based on the available hardware.
+The impact of these transfers depends on the system's GPU interconnect topology. Modern servers typically connect GPUs through PCIe or vendor-specific interconnects providing high bandwidth direct GPU-to-GPU communication. RCCL automatically selects optimal transfer paths based on the available hardware.
 
 **Stream Management and Execution Flow**
 
-Our implementation uses HIP streams to manage execution flow on each GPU. Streams provide essential mechanisms for:
+Our implementation creates independent HIP streams per GPU to manage asynchronous operations. The streams coordinate:
 
-* Queueing operations in the correct order
-* Enabling asynchronous execution where possible
-* Maintaining synchronization points between computation phases
+* Asynchronous memory transfers between host and device
+* RCCL collective operations (broadcasts and gathers)
+* rocBLAS matrix multiplication kernels
 
-While RCCL operations themselves are asynchronous, we ensure completion of each phase before proceeding to the next through explicit synchronization points. This careful orchestration of computation and communication enables our implementation to achieve near-linear speedup across multiple GPUs while maintaining numerical accuracy.
+The code uses RCCL's group start end semantics to batch communication operations, with explicit synchronization through hipStreamSynchronize and hipDeviceSynchronize ensuring completion at critical points.
 
 **Workload Distribution Strategy**
 
-The size of matrix chunks assigned to each GPU presents a straightforward tradeoff:
-
-* Larger chunks reduce the relative overhead of communication
-* Smaller chunks provide more flexible load balancing
-
-For our matrix multiplication case, we opted for simple equal-sized chunks since the computation is naturally balanced. This approach minimizes coordination overhead while maintaining good GPU utilization across devices.
+The implementation divides matrix A into equal-sized chunks across available GPUs, with each device processing an equal portion of rows. Matrix B is broadcast in full to all devices. Each GPU computes its portion of the final result matrix C, which is then gathered using ncclAllGather to reconstruct the complete output.
 
 Through this design, we minimize the overhead inherent in distributed computation while maximizing hardware utilization. The approach scales efficiently with additional GPUs while preserving the computational benefits of rocBLAS's optimized matrix operations on each device.
 
