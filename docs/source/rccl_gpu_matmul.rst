@@ -151,8 +151,7 @@ The implementation divides matrix A into equal-sized chunks across available GPU
 Through this design, we minimize the overhead inherent in distributed computation while maximizing hardware utilization. The approach scales efficiently with additional GPUs while preserving the computational benefits of rocBLAS's optimized matrix operations on each device.
 
 Code Walkthrough
-^^^^^^^^^^^^^^^^^
-
+^^^^^^^^^^^^^^^^
 Let's walk through the key components of our multi-GPU matrix multiplication implementation, examining how RCCL coordination, memory management, and computation work together to achieve high performance.
 
 The first critical phase involves setting up the RCCL context and allocating memory across our GPU array. Each GPU needs its own chunk of matrix A, a full copy of matrix B, and space for its portion of the result matrix C:
@@ -175,37 +174,49 @@ The first critical phase involves setting up the RCCL context and allocating mem
                                rccl_ctx->streams[i]));
    }
 
-Once memory is allocated, the actual matrix multiplication operation is handled by rocBLAS, with each GPU working on its assigned chunk of matrix A while using the complete matrix B:
+The `CHECK_HIP` macro below (defined in `utils.h <https://github.com/pebblesandweeds/rccl_gpu_matmul/blob/main/c/include/utils.h>`_) wraps all HIP API calls to provide robust error handling. The macro checks the returned `hipError_t` status code and terminates execution with an error message if the operation fails.
 
 .. code-block:: c
 
-   void perform_matrix_multiplication(
-       rocblas_handle* handles,
-       float** d_A_chunks,
-       float** d_B,
-       float** d_C_chunks,
-       int N,
-       int chunk_size,
-       int num_gpus,
-       hipStream_t* streams,
-       int NUM_RUNS) {
-       const float alpha = 1.0f;
-       const float beta = 0.0f;
-       for (int i = 0; i < num_gpus; i++) {
-           CHECK_HIP(hipSetDevice(i));
-           CHECK_ROCBLAS(rocblas_sgemm(handles[i],
-                                      rocblas_operation_none,
-                                      rocblas_operation_none,
-                                      N, chunk_size, N,
-                                      &alpha,
-                                      d_B[i], N,
-                                      d_A_chunks[i], N,
-                                      &beta,
-                                      d_C_chunks[i], N));
-       }
-   }
+   #define CHECK_HIP(stmt) do {                                 
+       hipError_t err = stmt;                                   
+       if (err != hipSuccess) {                                 
+           printf("HIP error: %s\n", hipGetErrorString(err));   
+           exit(1);                                             
+       }                                                        
+   } while(0)
 
-The RCCL library manages all communication between GPUs, first broadcasting matrix B to all devices and later gathering the partial results:
+Once memory is allocated, the actual matrix multiplication operation is handled by rocBLAS, with each GPU working on its assigned chunk of matrix A while using the complete copy of matrix B:
+
+.. code-block:: c
+
+  void perform_matrix_multiplication(
+      rocblas_handle* handles,
+      float** d_A_chunks,
+      float** d_B,
+      float** d_C_chunks,
+      int N,
+      int chunk_size,
+      int num_gpus,
+      hipStream_t* streams,
+      int NUM_RUNS) {
+      const float alpha = 1.0f;
+      const float beta = 0.0f;
+      for (int i = 0; i < num_gpus; i++) {
+          CHECK_HIP(hipSetDevice(i));
+          CHECK_ROCBLAS(rocblas_sgemm(handles[i],
+                                     rocblas_operation_none,
+                                     rocblas_operation_none,
+                                     N, chunk_size, N,
+                                     &alpha,
+                                     d_B[i], N,
+                                     d_A_chunks[i], N,
+                                     &beta,
+                                     d_C_chunks[i], N));
+      }
+  }
+
+Note that we pass matrix B as the first input matrix to rocBLAS instead of matrix A. Since matrix multiplication is associative, computing (B × A) produces the same result as (A × B)\ :sup:`T`, allowing us to avoid explicit matrix transposition while maintaining correct output dimensions.
 
 .. code-block:: c
 
