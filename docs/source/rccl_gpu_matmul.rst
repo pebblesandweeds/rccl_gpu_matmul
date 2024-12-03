@@ -1,19 +1,21 @@
 Scaling Matrix Multiplication Across Multiple AMD GPUs with RCCL and rocBLAS
 ============================================================================
 
-.. admonition:: Highlights 
+.. admonition:: Highlights
 
- - **Enhanced Scale**: We extend our previous single-GPU matrix multiplication to handle 32,768 x 32,768 matrices (~12.8 GB of memory) by distributing the computation across 8 GPUs.
-  
- - **Performance Improvement**: While a single GPU achieved ~37.5 TFLOPS, our multi-GPU implementation achieves a near-linear speedup, reaching ~280 TFLOPS across 8 GPUs.
-  
- - **RCCL Integration**: We leverage AMD's RCCL (ROCm Communication Collectives Library) for efficient GPU-to-GPU communication, specifically using broadcast and allgather operations.
-  
- - **Memory Distribution**: The implementation divides matrix A into chunks across GPUs while broadcasting matrix B, demonstrating effective memory management for large-scale computations.
+ Matrix multiplication beyond a single GPU presents both opportunities and challenges in deep learning. This blog post demonstrates how to scale our previous single-GPU implementation to efficiently utilize multiple GPUs through AMD's RCCL library, showing how careful coordination of communication and computation can achieve near-linear performance scaling.
 
- - **Accuracy Verification**: The implementation maintains the same level of numerical accuracy as our single-GPU version, verified through spot-checking against CPU results.
+ - **Scale and Memory**: We perform multiplication of 32,768 x 32,768 matrices (~12.8 GB total memory) by distributing computation across 8 GPUs, reducing per-GPU memory usage from 12.87 GB to ~5.36 GB through efficient matrix distribution.
 
- This blog post demonstrates how to scale matrix multiplication beyond a single GPU using AMD's RCCL library, showing how to efficiently coordinate multiple GPUs within a single machine for improved performance on larger matrices.
+ - **Performance Achievement**: Our C implementation achieves ~278.4 TFLOPS aggregate performance across 8 GPUs with 93.75% scaling efficiency from the single-GPU baseline of ~37.5 TFLOPS.
+
+ - **Distribution Strategy**: Successfully implements horizontal partitioning by chunking matrix A across GPUs while broadcasting matrix B, minimizing inter-GPU communication overhead while maintaining computational efficiency.
+
+ - **RCCL Integration**: Leverages AMD's ROCm Communication Collectives Library (RCCL) for efficient GPU coordination, using broadcast operations for matrix B distribution and allGather operations for result consolidation.
+
+ - **PyTorch Comparison**: Matches PyTorch's distributed implementation performance (~279.2 TFLOPS) while providing deeper insight into multi-GPU coordination through direct use of RCCL primitives.
+
+ This implementation demonstrates how proper coordination between RCCL communication and rocBLAS computation enables efficient scaling across multiple GPUs while maintaining high performance. Our C implementation provides valuable insights into distributed GPU computing concepts while achieving performance parity with PyTorch's highly optimized framework.
 
 Introduction
 ------------
