@@ -308,13 +308,8 @@ transparency into the underlying mechanisms of multi-GPU matrix multiplication.
 Conclusion
 ----------
 
-Our multi-GPU implementation successfully scales matrix multiplication across 8 GPUs, enabling processing of larger matrices while maintaining high performance. The near-linear speedup demonstrates the effectiveness of RCCL for GPU communication and our chunk-based distribution strategy.
+Our exploration of multi-GPU matrix multiplication using AMD's RCCL and rocBLAS libraries demonstrated the substantial performance improvements that modern distributed GPU systems can deliver. By distributing 32,768 x 32,768 matrices across 8 GPUs, we achieved around 278.4 TFLOPS, emphasizing the efficiency of coordinated GPU acceleration for large-scale computations.
 
-Key takeaways:
-1. RCCL enables efficient multi-GPU coordination with minimal overhead
-2. Proper data distribution is crucial for balanced GPU utilization
-3. rocBLAS performance scales well across multiple GPUs
+Both the PyTorch and C implementations produced nearly identical performance results, with PyTorch reaching 279.2 TFLOPS. This confirms that while high-level frameworks like PyTorch simplify distributed programming, low-level programming with RCCL and rocBLAS offers comparable efficiency while providing deeper insight into GPU communication patterns and distributed memory management. Most importantly, our horizontal partitioning strategy proved effective, reducing per-GPU memory requirements from 12.87 GB to ~5.36 GB while maintaining high computational throughput - demonstrating the practical benefits of distributed GPU computing for handling large-scale matrix operations in deep learning workloads.
 
-This implementation provides a foundation for handling even larger matrices and could be extended to multi-node configurations using technologies like ROCm-aware MPI.
-
-For the complete implementation, check out our `GitHub repository <link>`_.
+Thanks for reading! For more details, check out our GitHub repository. Stay tuned for future blogs where we'll explore more advanced topics in distributed GPU computing.
