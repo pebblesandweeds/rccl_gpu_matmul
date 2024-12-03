@@ -122,17 +122,17 @@ It's worth noting that in real world deep learning applications, we typically pr
 RCCL Implementation Considerations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-When distributing matrix multiplication across multiple GPUs, several key factors influence overall system performance:
+When distributing matrix multiplication across multiple GPUs, several factors influence overall system performance:
 
 **Communication Overhead and Hardware**
 
-While splitting computation across GPUs provides more aggregate compute power, it introduces communication overhead that must be managed carefully. The most significant communication costs occur during:
+Distributing computation across multiple GPUs introduces unavoidable overhead from both communication costs and the inherent challenges of parallel workloads. While a single GPU might achieve :math:`X` teraflops of performance, scaling to :math:`N` GPUs will not yield :math:`N \times X` teraflops due to these distributed computing overheads. Our goal is to minimize this scaling efficiency loss through careful management of the three main communication costs:
 
 * Initial distribution of matrix chunks across devices
 * Broadcasting matrix B to all GPUs
 * Final gathering of results using ncclAllGather
 
-The impact of these transfers depends on the system's GPU interconnect topology. Modern servers typically connect GPUs through PCIe or vendor-specific interconnects providing high bandwidth direct GPU-to-GPU communication. RCCL automatically selects optimal transfer paths based on the available hardware.
+The impact of these transfers depends on the system's GPU interconnect topology since different interconnects offer varying bandwidth and latency characteristics. PCIe and vendor-specific interconnects provide different performance tradeoffs, which RCCL leverages by automatically selecting transfer paths that minimize communication overhead based on the specific hardware topology.
 
 **Stream Management and Execution Flow**
 
