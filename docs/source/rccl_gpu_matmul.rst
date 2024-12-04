@@ -272,41 +272,47 @@ This implementation shows how we can scale matrix multiplication across multiple
 Performance Analysis
 --------------------
 
-We evaluated the scaling efficiency of our distributed matrix multiplication implementation by measuring performance on both single and multi-GPU configurations within the same host system. Our goal was not to optimize for peak performance or match vendor benchmark numbers, but rather to measure "out of the box" rocBLAS performance on square matrices and quantify any overhead introduced by RCCL communication when moving from single to multi-GPU execution.
+We evaluated our distributed matrix multiplication implementation by first establishing a baseline using our previous `single-GPU implementation <https://github.com/pebblesandweeds/gpu_matmul>`_, then comparing it against our new multi-GPU RCCL code running on the same hardware. This approach allowed us to directly measure any overhead introduced by RCCL communication when scaling from single to multi-GPU execution.
 
-Benchmark Configuration 
+Benchmark Configuration
 ^^^^^^^^^^^^^^^^^^^^^^^
 Our test environment consisted of:
 
 * **Hardware**
-   * AMD Instinct MI250X GPUs (1-8 GPUs) 
+   * AMD Instinct MI250X GPUs (1-8 GPUs)
    * GPU Clock: 1700 MHz
-* **Test Parameters**  
+* **Test Parameters**
    * Matrix Dimensions: 32,768 x 32,768 (FP32)
-   * 25 consecutive multiplication runs
+   * 25 consecutive multiplication runs per configuration
    * ROCm 6.0.2
+* **Implementations Tested**
+   * Single GPU: Single-GPU `rocBLAS C implementation <https://github.com/pebblesandweeds/gpu_matmul>`_ 
+   * Multi-GPU: Mult-GPU `RCCL-based C implementation <https://github.com/pebblesandweeds/rccl_gpu_matmul>`_
+   * PyTorch: Distributed implementation for validation
 
-Multi-GPU Scaling Analysis 
+Multi-GPU Scaling Analysis
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
-In the single GPU configuration, performance ranges from 34.58-35.87 TFLOPS for matrix multiplication. When distributed across 8 GPUs, per-GPU performance ranges from 34.7-35.7 TFLOPS, with aggregate system throughput of 280 TFLOPS. The minimal performance variation between single and multi-GPU execution indicates RCCL's broadcast and allGather operations impose minimal overhead with our horizontal partitioning strategy.
+Our single-GPU baseline implementation achieved 34.58-35.87 TFLOPS for matrix multiplication, establishing our performance target for per-GPU throughput in the distributed system. When scaling to 8 GPUs using our new RCCL implementation, we observed per-GPU performance of 34.7-35.7 TFLOPS, resulting in aggregate system throughput of approximately 280 TFLOPS. The consistent per-GPU performance between single and multi-GPU execution demonstrates that RCCL's broadcast and allGather operations impose minimal overhead with our horizontal partitioning strategy.
 
-* **Single GPU Performance**: 34.58-35.87 TFLOPS
-* **Multi-GPU Range**: 34.7-35.7 TFLOPS per GPU
+* **Single GPU Baseline**: 34.58-35.87 TFLOPS (using previous gpu_matmul implementation)
+* **Multi-GPU Range**: 34.7-35.7 TFLOPS per GPU (using new RCCL implementation)
 * **Aggregate Performance**: ~280 TFLOPS across 8 GPUs
+* **Scaling Efficiency**: >98% per-GPU performance maintained when scaling to 8 GPUs
 
 PyTorch Implementation Comparison
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 To validate our C implementation, we developed an equivalent distributed PyTorch version that performs the same matrix broadcast and multiplication operations using torch.distributed primitives. The PyTorch implementation achieved similar performance characteristics after warm-up, matching our C code's performance envelope. This verification demonstrates that our low-level RCCL and rocBLAS implementation achieves comparable efficiency to PyTorch's optimized framework while providing direct control over the distributed computation pattern.
 
-* **Per-GPU Range**: 34.6-35.7 TFLOPS 
+* **Per-GPU Range**: 34.6-35.7 TFLOPS
 * **Aggregate Performance**: ~280 TFLOPS
 * **Implementation**: Uses torch.distributed for matrix broadcast and distributed computation
 
 Conclusion
 ----------
 
-Our exploration of multi-GPU matrix multiplication using AMD's RCCL and rocBLAS libraries demonstrated the substantial performance improvements that modern distributed GPU systems can deliver. By distributing 32,768 x 32,768 matrices across 8 GPUs, we achieved around 278.4 TFLOPS, emphasizing the efficiency of coordinated GPU acceleration for large-scale computations.
+Our exploration of multi-GPU matrix multiplication using AMD's RCCL and rocBLAS libraries demonstrated how to efficiently scale matrix operations across multiple devices while maintaining high per-GPU performance. Starting with our previous single-GPU implementation that achieved 34.58-35.87 TFLOPS, we showed that distributing 32,768 x 32,768 matrices across 8 GPUs could deliver ~280 TFLOPS of aggregate performance while maintaining equivalent per-GPU throughput (34.7-35.7 TFLOPS). This near-linear scaling emphasizes the efficiency of our RCCL-based coordination approach for large-scale computations.
 
-Both the PyTorch and C implementations produced nearly identical performance results, with PyTorch reaching 279.2 TFLOPS. This confirms that while high-level frameworks like PyTorch simplify distributed programming, low-level programming with RCCL and rocBLAS offers comparable efficiency while providing deeper insight into GPU communication patterns and distributed memory management. Most importantly, our horizontal partitioning strategy proved effective, reducing per-GPU memory requirements from 12.87 GB to ~5.36 GB while maintaining high computational throughput - demonstrating the practical benefits of distributed GPU computing for handling large-scale matrix operations in deep learning workloads.
+Both the PyTorch and C implementations produced nearly identical performance results, with both reaching approximately 280 TFLOPS. This confirms that while high-level frameworks like PyTorch simplify distributed programming, low-level programming with RCCL and rocBLAS offers comparable efficiency while providing deeper insight into GPU communication patterns and distributed memory management. Most importantly, our horizontal partitioning strategy proved effective, reducing per-GPU memory requirements from 12.87 GB to ~5.36 GB while maintaining the baseline computational throughput of our original single-GPU implementation - demonstrating the practical benefits of distributed GPU computing for handling large-scale matrix operations in deep learning workloads.
 
 Thanks for reading! For more details, check out our GitHub repository. Stay tuned for future blogs where we'll explore more advanced topics in distributed GPU computing.
+
