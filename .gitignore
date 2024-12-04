@@ -1,0 +1,7 @@
+bin/
+obj/
+.python-version
+docs/build
+**/.DS_Store
+.DS_Store
+docs/.DS_Store
