@@ -5,13 +5,13 @@ Scaling Matrix Multiplication Across Multiple AMD GPUs with RCCL and rocBLAS
 
  Scaling matrix multiplication beyond a single GPU presents both opportunities and challenges in deep learning. This blog post demonstrates how to scale our `previous single-GPU implementation <https://blog.pebblesandweeds.com/gpu_matmul_blog.html>`_ to efficiently utilize multiple GPUs in a single server through AMD's RCCL library, showing how coordination of communication and computation can achieve near-linear performance scaling.
 
- - **Scaling Efficiency**: We achieved 93.75% of the theoretical maximum throughput across 8 AMD MI250x GPUs, processing at 278.4 TFLOPS compared to the ideal 300 TFLOPS (8 × ~37.5 TFLOPS). Each GPU executes ``rocblas_sgemm()`` for its local matrix multiplication while coordinating through RCCL, delivering a 7.5x speedup from a single GPU - approaching but not quite reaching perfect 8x scaling due to communication overhead.
+ - **Scaling Efficiency**: Using baseline performance from our previous single-GPU implementation, we achieve equivalent per-GPU throughput when distributed across 8 GPUs (~35 TFLOPS per GPU, ~280 TFLOPS aggregate). This demonstrates that RCCL's communication primitives impose minimal overhead, as each GPU maintains the baseline performance while coordinating through broadcast and allGather operations.
 
  - **Memory Distribution**: We performed multiplication of 32,768 x 32,768 single precision matrices by horizontally chunking matrix A across eight (8) GPUs while broadcasting matrix B. This reduces per-GPU memory requirements from 12.87 GB to ~5.36 GB while enabling parallel computation of the results.
 
  - **RCCL Communication**: Implemented single-host, multi-GPU coordination through RCCL collective operations, broadcasting matrix B across GPUs and combining partial results through allGather. These high-level primitives handle the complex low-level details of efficient inter-GPU data transfer.
 
- - **PyTorch Validation**: Implemented simple distributed `Pytorch <https://github.com/pebblesandweeds/rccl_gpu_matmul/blob/dev/pytorch/pytorch_rccl.py>`_ code using torch.distributed primitives that achieved matching multi-GPU performance (~279.2 TFLOPS), validating our low-level C and RCCL implementation against PyTorch's established distributed computing framework.
+ - **PyTorch Validation**: Implemented simple distributed `Pytorch <https://github.com/pebblesandweeds/rccl_gpu_matmul/blob/dev/pytorch/pytorch_rccl.py>`_ code using torch.distributed primitives that achieved matching multi-GPU performance (34.6-35.7 TFLOPS per GPU), validating our low-level C and RCCL implementation against PyTorch's established distributed computing framework.
 
  This implementation demonstrates how proper coordination between RCCL communication and rocBLAS computation enables efficient scaling across multiple GPUs while maintaining high performance. Our C implementation provides insight into distributed GPU computing concepts while achieving performance parity with PyTorch's optimized framework.
 
@@ -272,62 +272,35 @@ This implementation shows how we can scale matrix multiplication across multiple
 Performance Analysis
 --------------------
 
-To validate our multi-GPU implementation, we conducted extensive performance testing comparing
-our C implementation against a PyTorch reference. All tests were run on a system with 8 AMD
-MI250X GPUs, processing 32,768 x 32,768 single-precision matrices requiring approximately
-12.8 GB of total GPU memory. We executed 25 test runs to ensure consistent measurements.
+We evaluated the scaling efficiency of our distributed matrix multiplication implementation by measuring performance on both single and multi-GPU configurations within the same host system. Our goal was not to optimize for peak performance or match vendor benchmark numbers, but rather to measure "out of the box" rocBLAS performance on square matrices and quantify any overhead introduced by RCCL communication when moving from single to multi-GPU execution.
 
-For comparison, we implemented a simple PyTorch version using the distributed data parallel
-features. The PyTorch code uses only about 50 lines to achieve the same functionality as our
-C implementation - initializing the distributed process group, chunking the matrices across
-GPUs, broadcasting matrix B, and coordinating the computation through NCCL (PyTorch's
-interface to RCCL on AMD hardware). While our C implementation provides deeper insight into
-the underlying mechanisms, the PyTorch version demonstrates how high-level frameworks can
-abstract away much of the complexity of distributed GPU programming.
-
-The detailed performance metrics demonstrate that our C implementation achieves performance
-parity with PyTorch:
-
-Benchmark Configuration
+Benchmark Configuration 
 ^^^^^^^^^^^^^^^^^^^^^^^
-- Hardware: 8x AMD Instinct MI250X GPUs
-- Matrix Dimensions: 32,768 x 32,768 (single precision, ~12.8 GB total memory)
-- Number of Test Runs: 25
+Our test environment consisted of:
 
-Performance Results
-^^^^^^^^^^^^^^^^^^^
-After initial warm-up, both implementations demonstrated nearly identical steady-state performance:
+* **Hardware**
+   * AMD Instinct MI250X GPUs (1-8 GPUs) 
+   * GPU Clock: 1700 MHz
+* **Test Parameters**  
+   * Matrix Dimensions: 32,768 x 32,768 (FP32)
+   * 25 consecutive multiplication runs
+   * ROCm 6.0.2
 
-C Implementation:
-- Average Performance per GPU: ~34.8 TFLOPS
-- Aggregate System Performance: ~278.4 TFLOPS
+Multi-GPU Scaling Analysis 
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+In the single GPU configuration, performance ranges from 34.58-35.87 TFLOPS for matrix multiplication. When distributed across 8 GPUs, per-GPU performance ranges from 34.7-35.7 TFLOPS, with aggregate system throughput of 280 TFLOPS. The minimal performance variation between single and multi-GPU execution indicates RCCL's broadcast and allGather operations impose minimal overhead with our horizontal partitioning strategy.
 
-Example steady-state output::
+* **Single GPU Performance**: 34.58-35.87 TFLOPS
+* **Multi-GPU Range**: 34.7-35.7 TFLOPS per GPU
+* **Aggregate Performance**: ~280 TFLOPS across 8 GPUs
 
-    GPU 2, Run 5: Time: 246.66 ms, Performance: 35.66 TFLOPS
-    GPU 3, Run 5: Time: 247.72 ms, Performance: 35.51 TFLOPS
-    GPU 6, Run 5: Time: 250.37 ms, Performance: 35.13 TFLOPS
+PyTorch Implementation Comparison
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+To validate our C implementation, we developed an equivalent distributed PyTorch version that performs the same matrix broadcast and multiplication operations using torch.distributed primitives. The PyTorch implementation achieved similar performance characteristics after warm-up, matching our C code's performance envelope. This verification demonstrates that our low-level RCCL and rocBLAS implementation achieves comparable efficiency to PyTorch's optimized framework while providing direct control over the distributed computation pattern.
 
-PyTorch Implementation:
-- Average Performance per GPU: ~34.9 TFLOPS
-- Aggregate System Performance: ~279.2 TFLOPS
-
-Example steady-state output::
-
-    GPU 2, Run 5: Time: 245.72 ms, Performance: 35.80 TFLOPS
-    GPU 3, Run 5: Time: 246.50 ms, Performance: 35.68 TFLOPS
-    GPU 6, Run 5: Time: 249.80 ms, Performance: 35.21 TFLOPS
-
-The results show that both implementations achieve nearly identical performance, with our C
-implementation reaching ~278.4 TFLOPS compared to PyTorch's ~279.2 TFLOPS. This close match
-validates the correctness and efficiency of our implementation. Compared to our previous
-single-GPU performance of ~37.5 TFLOPS, the multi-GPU solution demonstrates excellent scaling
-efficiency of 93.75%. The small efficiency loss from perfect linear scaling is expected due
-to the necessary communication overhead when distributing computation across multiple GPUs.
-
-These results confirm that our direct use of rocBLAS and RCCL achieves the same level of
-performance optimization as PyTorch's highly tuned implementation, while providing greater
-transparency into the underlying mechanisms of multi-GPU matrix multiplication.
+* **Per-GPU Range**: 34.6-35.7 TFLOPS 
+* **Aggregate Performance**: ~280 TFLOPS
+* **Implementation**: Uses torch.distributed for matrix broadcast and distributed computation
 
 Conclusion
 ----------
